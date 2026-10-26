@@ -1,34 +1,34 @@
 ---
-title: "Spatial-Temporal Analysis of Russian Trawlers in Hokkaido/Northern Territories EEZ"
-title-maintitle: "北海道・北方領土周辺におけるロシアトロール船の空間・時系列分析"
-author: "Kei Oyama (小山 奎)"
+title: "根室海峡におけるロシアトロール船の操業実態：GFWによる検証"
+subtitle: "Russian Trawlers in the Nemuro Strait: Evidence from Global Fishing Watch"
+author: "小山 奎 (Kei Oyama)"
 date: last-modified
+lang: ja
 format:
   html:
     toc: true
-    toc-depth: 3
+    toc-depth: 2
     toc-location: left
     number-sections: true
-    number-depth: 3
+    number-depth: 2
     theme: flatly
     code-fold: show
     code-tools: true
     embed-resources: true
-    knitr:
-      opts_chunk:
-        dev: "ragg_png"
-        fig.ext: "png"
+knitr:
+  opts_chunk:
+    dev: "ragg_png"
+    fig.ext: "png"
 ---
+
 ```{r setup, include=FALSE}
-# Chunk Setup / チャンク基本設定
 knitr::opts_chunk$set(
-  echo = TRUE, 
-  warning = FALSE, 
+  echo = TRUE,
+  warning = FALSE,
   message = FALSE,
   fig.width = 9,
   fig.height = 6
 )
-
 ```
 
 # Research Design / 研究設計 {.unnumbered}
@@ -107,8 +107,11 @@ Context: In June 2022, Russia announced the suspension of the Japan–Russia fra
 :::
 
 
+# 環境設定
+
+## パッケージ
+
 ```{r libraries}
-# Load Required Libraries / 必要なライブラリの読み込み
 library(here)
 library(tidyverse)
 library(lubridate)
@@ -117,420 +120,269 @@ library(sf)
 library(rnaturalearth)
 library(viridis)
 library(gt)
+
+sf_use_s2(FALSE)
+theme_set(theme_bw(base_family = "Hiragino Sans"))
 ```
 
-# Environment Setup & Path Configurations / 環境設定とパス構成
+## パスと定数
 
-```{r paths_and_settings}
-# ==============================================================================
-# Path and Environment Configurations / パス・環境設定
-# Read-only from shared drive, Write-only to local project directory
-# 共有ドライブからは読み込みのみ、書き出しはローカルディレクトリのみ
-# ==============================================================================
+**入力**：共有ドライブ（`~/.Renviron` の `GAKULAB_DATA`。読み込みのみ）　**出力**：`data/processed`、`output/fig`、`output/tables`
 
-# 1. Shared-drive root from ~/.Renviron (account-independent)
-# 共有ドライブのルートは ~/.Renviron の GAKULAB_DATA で指定（アカウントに依存しない）
+```{r paths}
+# 共有ドライブ（アカウントに依存しない）
 GAKULAB_DATA <- Sys.getenv("GAKULAB_DATA", unset = NA)
 if (is.na(GAKULAB_DATA) || !dir.exists(GAKULAB_DATA)) {
-  stop("GAKULAB_DATA is not set or not mounted. Set it in ~/.Renviron. / ~/.Renviron に GAKULAB_DATA を設定してください。")
+  stop("~/.Renviron に GAKULAB_DATA を設定してください。")
 }
-
-# 2. Input files / 入力ファイル
 VESSEL_LIST_FILE <- file.path(GAKULAB_DATA, "original", "gfw", "vessel_list", "old", "gfw_vessel_list_20250701.parquet")
 GFW_DAILY_DIR    <- file.path(GAKULAB_DATA, "original", "gfw", "daily", "fixed")
+stopifnot(file.exists(VESSEL_LIST_FILE), dir.exists(GFW_DAILY_DIR))
 
-# File existence check / 事前存在チェック
-if (is.na(VESSEL_LIST_FILE) || !file.exists(VESSEL_LIST_FILE)) {
-  stop("Error: vessel_list file not accessible. / vessel_list ファイルにアクセスできません。")
-}
-if (is.na(GFW_DAILY_DIR) || !dir.exists(GFW_DAILY_DIR)) {
-  stop("Error: daily/fixed directory not accessible. / daily/fixed ディレクトリにアクセスできません。")
-}
+# ローカル保存先
+PROCESSED_DIR <- here("data", "processed")
+DAILY_RUS_DIR <- here("data", "processed", "daily_russian_trawlers")
+FIG_DIR       <- here("output", "fig")
+TAB_DIR       <- here("output", "tables")
+walk(c(PROCESSED_DIR, DAILY_RUS_DIR, FIG_DIR, TAB_DIR), dir.create, recursive = TRUE, showWarnings = FALSE)
 
-# 5. Local Processed Directories / ローカルデータ保存先（プロジェクト直下）
-local_processed_dir <- here("data", "processed")
-local_daily_rus_dir <- here("data", "processed", "daily_russian_trawlers")
+# 分析対象
+YEARS        <- 2018:2025
+VESSEL_CLASS <- "trawlers"
 
-dir.create(local_processed_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(local_daily_rus_dir, recursive = TRUE, showWarnings = FALSE)
-
-# Target Fishery Class / 分析対象漁種
-fishery_type_temp <- c("trawlers")
-
-# Base Path for Shapefiles / 共有ドライブのルートパス
-gakulab_base_path <- file.path(GAKULAB_DATA, "original")
-
-message(paste0(">>> Vessel list path: ", VESSEL_LIST_FILE))
-message(paste0(">>> Daily directory path: ", GFW_DAILY_DIR))
+# 分析範囲：根室海峡（経度・緯度）
+AREA_NEMURO <- c(xmin = 144.8, xmax = 146.0, ymin = 43.2, ymax = 44.5)
 ```
 
-# Local Data Extraction & Subsetting / データ抽出とローカル保存
+## 保存用の関数
 
-```{r step1_local_subsetting}
-# ==============================================================================
-# Step 1: Subsetting Russian Trawlers Data locally / ロシアトロール船データのローカル切り出し
-# Skip if local Parquet files already exist / 既に手元にある場合は自動スキップ
-# ==============================================================================
-local_parquet_files <- list.files(local_daily_rus_dir, pattern = "\\.parquet$", full.names = TRUE)
+図と表はオブジェクト名と同じファイル名で保存する（例：`plot01_area` → `output/fig/plot01_area.png`）。
 
-if (length(local_parquet_files) == 0) {
-  message(">>> [Local Processing] Extracting Russian trawlers data from shared drive...")
-  
-  # Load Vessel Master List / マスター船リストからロシアトロール船 ssvid を取得
+```{r save-functions}
+save_plot <- function(p, width = 8, height = 6) {
+  name <- deparse(substitute(p))
+  ggsave(file.path(FIG_DIR, paste0(name, ".png")), p,
+         width = width, height = height, dpi = 300, device = ragg::agg_png)
+}
+
+save_table <- function(tb) {
+  name <- deparse(substitute(tb))
+  gtsave(tb, file.path(TAB_DIR, paste0(name, ".html")))
+}
+```
+
+# データの準備
+
+## ロシアトロール船の抽出
+
+**目的**：共有ドライブの日次データから、ロシア船籍トロール船の記録だけをローカルに切り出す（初回のみ実行）。
+**出力**：`data/processed/daily_russian_trawlers/rus_trawlers_<年>.parquet`
+
+```{r extract-russian-trawlers}
+if (length(list.files(DAILY_RUS_DIR, pattern = "\\.parquet$")) == 0) {
   vessel_master <- read_parquet(VESSEL_LIST_FILE)
-  
+
   target_ssvids <- vessel_master %>%
-    filter(best_known_flag == "RUS", best_vessel_class %in% fishery_type_temp) %>%
+    filter(best_known_flag == "RUS", best_vessel_class %in% VESSEL_CLASS) %>%
     pull(ssvid) %>%
     unique() %>%
     as.character()
-  
-  message(paste0(">>> Target Russian Trawlers count: ", length(target_ssvids)))
-  
-  # Iterative Yearly Subsetting / 年別ループ切り出し
-  for (y in 2018:2025) {
-    yearly_files <- list.files(
-      path       = GFW_DAILY_DIR,
-      pattern    = paste0("^gfw_dat_v4_daily_", y, "_.*\\.parquet$"),
-      full.names = TRUE
-    )
-    
-    if (length(yearly_files) == 0) next
-    
-    # Exclude invalid/empty files / 破損・空ファイル（1KB以下）の除外
-    valid_files <- yearly_files[file.info(yearly_files)$size > 1000]
+
+  for (y in YEARS) {
+    yearly_files <- list.files(GFW_DAILY_DIR, pattern = paste0("^gfw_dat_v4_daily_", y, "_.*\\.parquet$"), full.names = TRUE)
+    valid_files  <- yearly_files[file.info(yearly_files)$size > 1000] # 空ファイルを除外
     if (length(valid_files) == 0) next
-    
-    tryCatch({
-      ds <- open_dataset(valid_files, format = "parquet")
-      
-      df_extracted <- ds %>%
-        filter(ssvid %in% target_ssvids, fishing_hours > 0) %>%
-        select(ssvid, first_timestamp, avg_lat_lon, active_hours, fishing_hours) %>%
-        collect()
-      
-      if (nrow(df_extracted) == 0) next
-      
-      # Parse Lat/Lon with Regex / 正規表現による緯度経度抽出
-      df_filt <- df_extracted %>%
-        mutate(
-          coords  = str_extract_all(avg_lat_lon, "[-+]?[0-9]*\\.?[0-9]+"),
-          avg_lon = as.numeric(map_chr(coords, ~ .x[1])),
-          avg_lat = as.numeric(map_chr(coords, ~ .x[2]))
-        ) %>%
-        filter(
-          !is.na(avg_lat), !is.na(avg_lon),
-          avg_lat >= 41.5, avg_lat <= 50.0,
-          avg_lon >= 139.0, avg_lon <= 160.0
-        ) %>%
-        select(-coords)
-      
-      out_path <- file.path(local_daily_rus_dir, paste0("rus_trawlers_", y, ".parquet"))
-      write_parquet(df_filt, sink = out_path)
-      message(paste0(">>> Local extraction complete: Year ", y, " (", nrow(df_filt), " rows)"))
-      
-    }, error = function(e) {
-      message(paste0("!!! Error processing year ", y, ": ", e$message))
-    })
+
+    df_year <- open_dataset(valid_files, format = "parquet") %>%
+      filter(ssvid %in% target_ssvids, fishing_hours > 0) %>%
+      select(ssvid, first_timestamp, avg_lat_lon, active_hours, fishing_hours) %>%
+      collect() %>%
+      mutate(
+        coords  = str_extract_all(avg_lat_lon, "[-+]?[0-9]*\\.?[0-9]+"),
+        avg_lon = as.numeric(map_chr(coords, ~ .x[1])),
+        avg_lat = as.numeric(map_chr(coords, ~ .x[2]))
+      ) %>%
+      filter(between(avg_lat, 41.5, 50.0), between(avg_lon, 139.0, 160.0)) %>%
+      select(-coords)
+
+    write_parquet(df_year, file.path(DAILY_RUS_DIR, paste0("rus_trawlers_", y, ".parquet")))
   }
-} else {
-  message(">>> [Local Processing] Local subset Parquet files confirmed. Skipping extraction.")
 }
 ```
 
-# Spatial EEZ Intersection & Caching / EEZ空間結合とキャッシュ化
+## 分析範囲の作成
 
-```{r step2_data_loading_and_caching}
-# ==============================================================================
-# Step 2: Spatial Intersection with EEZ & Cache / 空間結合とキャッシュ保存
-# Apply distinct() to prevent duplication / 重複を排除してRDSキャッシュ
-# ==============================================================================
-cache_rds_path <- file.path(local_processed_dir, "russian_vessels_hokkaido_2018_2025.rds")
+**目的**：根室海峡の範囲（`AREA_NEMURO`）から陸地を除いた海域ポリゴン `area_nemuro` を作る。
 
-if (file.exists(cache_rds_path)) {
-  message(">>> [Local Processing] Fast loading from local RDS cache.")
-  dat_hokkaido <- readRDS(cache_rds_path)
+```{r area-nemuro}
+land_sf <- ne_countries(country = c("japan", "russia"), scale = "large", returnclass = "sf") %>%
+  st_union() %>%
+  st_crop(AREA_NEMURO)
 
+area_nemuro <- st_as_sfc(st_bbox(AREA_NEMURO, crs = 4326)) %>%
+  st_difference(land_sf)
+
+# 地図ラベル（位置はおおよそ）
+places <- tribble(
+  ~name,    ~lon,   ~lat,
+  "羅臼町", 145.19, 44.02,
+  "標津町", 145.13, 43.66,
+  "別海町", 145.18, 43.40,
+  "国後島", 145.85, 44.15
+)
+```
+
+## plot01 分析範囲
+
+```{r plot01-area}
+plot01_area <- ggplot() +
+  geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_nemuro, fill = "steelblue", alpha = 0.2, color = "steelblue") +
+  geom_text(data = places, aes(lon, lat, label = name), size = 3.5) +
+  coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  labs(title = "plot01 分析範囲：根室海峡",
+       subtitle = sprintf("経度 %.1f–%.1f°E、緯度 %.1f–%.1f°N（陸地を除く）",
+                          AREA_NEMURO["xmin"], AREA_NEMURO["xmax"], AREA_NEMURO["ymin"], AREA_NEMURO["ymax"]),
+       x = "経度", y = "緯度")
+
+plot01_area
+save_plot(plot01_area)
+```
+
+## 分析範囲内のデータ抽出
+
+**目的**：ローカルのロシアトロール船データから、`area_nemuro` 内の記録を取り出し、船舶情報を結合する。日付はJSTに変換する。
+**出力**：`dat_nemuro`（キャッシュ：`data/processed/dat_nemuro.rds`）
+
+```{r dat-nemuro}
+cache_nemuro <- file.path(PROCESSED_DIR, "dat_nemuro.rds")
+
+if (file.exists(cache_nemuro)) {
+  dat_nemuro <- readRDS(cache_nemuro)
 } else {
-  message(">>> [Local Processing] Executing EEZ spatial intersection...")
-  
-  # Load EEZ Boundaries / EEZポリゴンのロードと境界調整
-  eez_files <- list.files(path = gakulab_base_path, pattern = "^eez_japan_comp\\.shp$", recursive = TRUE, full.names = TRUE)
-  eez_sf    <- st_read(eez_files[1], quiet = TRUE) |> st_make_valid()
+  # 船舶リストは同じ ssvid×年 が複数行あるため、1行に絞ってから結合する（重複結合の防止）
+  vessel_master <- read_parquet(VESSEL_LIST_FILE) %>%
+    mutate(ssvid = as.character(ssvid)) %>%
+    distinct(ssvid, year, .keep_all = TRUE)
 
-  japan_around_sf  <- ne_countries(country = c('japan','russia','south korea','north korea','china'), scale = "large", returnclass = "sf") |> st_union() |> st_transform(crs = 4326)
-  japan_true_sf    <- st_intersection(japan_around_sf, eez_sf)
-  eez_japan_sea    <- st_difference(eez_sf, japan_true_sf)
-
-  bbox_hokkaido    <- st_bbox(c(xmin = 139.0, xmax = 160.0, ymin = 41.5, ymax = 50.0), crs = st_crs(eez_japan_sea))
-  eez_hokkaido_sea <- st_crop(eez_japan_sea, bbox_hokkaido)
-  
-  # Master list join / マスター情報の結合
-  vessel_master <- read_parquet(VESSEL_LIST_FILE)
-  
-  # Load Local Parquet / ローカルParquetデータの統合
-  local_files <- list.files(local_daily_rus_dir, pattern = "\\.parquet$", full.names = TRUE)
-  ds_rus      <- open_dataset(local_files, format = "parquet")
-  
-  dat_raw <- ds_rus %>%
+  dat_bbox <- open_dataset(DAILY_RUS_DIR, format = "parquet") %>%
+    filter(between(avg_lon, AREA_NEMURO[["xmin"]], AREA_NEMURO[["xmax"]]),
+           between(avg_lat, AREA_NEMURO[["ymin"]], AREA_NEMURO[["ymax"]])) %>%
     collect() %>%
-    mutate(
-      ssvid    = as.character(ssvid),
-      ts_posix = as.POSIXct(first_timestamp, tz = "Asia/Tokyo"),
-      year     = year(ts_posix)
-    ) %>%
-    left_join(vessel_master, by = c("ssvid", "year"))
-  
-  # Precise Spatial Intersection with Deduplication / 空間結合と重複排除
-  sf_raw <- dat_raw %>%
-    mutate(lon = round(avg_lon, 2), lat = round(avg_lat, 2)) %>%
-    distinct() %>%
-    st_as_sf(coords = c("lon", "lat"), crs = 4326)
-  
-  sf_hokkaido <- st_intersection(sf_raw, eez_hokkaido_sea) %>%
+    mutate(ssvid = as.character(ssvid),
+           ts_jst = with_tz(first_timestamp, "Asia/Tokyo"),
+           year   = year(ts_jst)) %>%
     distinct(ssvid, first_timestamp, .keep_all = TRUE)
-  
-  # Save clean dataset / キャッシュ用データ整形と書き出し
-  dat_hokkaido <- sf_hokkaido %>%
-    mutate(
-      lon       = st_coordinates(.)[,1],
-      lat       = st_coordinates(.)[,2],
-      ts_posix  = as.POSIXct(first_timestamp, tz = "Asia/Tokyo"),
-      year_num  = year(ts_posix),
-      month_num = month(ts_posix),
-      date      = as.Date(ts_posix)
-    ) %>%
-    select(-ts_posix) %>%
-    st_drop_geometry()
-  
-  saveRDS(dat_hokkaido, cache_rds_path)
-  message(">>> [Local Processing] Saved clean spatial cache RDS.")
+
+  # 陸地上に落ちた点（日平均位置の誤差）を除く
+  in_area <- dat_bbox %>%
+    st_as_sf(coords = c("avg_lon", "avg_lat"), crs = 4326, remove = FALSE) %>%
+    st_intersects(area_nemuro, sparse = FALSE) %>%
+    as.vector()
+  message("陸地上で除外した記録：", sum(!in_area), " / ", nrow(dat_bbox))
+
+  dat_nemuro <- dat_bbox[in_area, ] %>%
+    left_join(vessel_master, by = c("ssvid", "year")) %>%
+    filter(best_known_flag == "RUS", best_vessel_class %in% VESSEL_CLASS) %>%
+    mutate(date   = as.Date(ts_jst),
+           month  = month(ts_jst),
+           season = factor(case_when(
+             month %in% 3:5  ~ "春 (3-5月)",
+             month %in% 6:8  ~ "夏 (6-8月)",
+             month %in% 9:11 ~ "秋 (9-11月)",
+             TRUE            ~ "冬 (12-2月)"),
+             levels = c("春 (3-5月)", "夏 (6-8月)", "秋 (9-11月)", "冬 (12-2月)")))
+
+  stopifnot(nrow(dat_nemuro) == nrow(distinct(dat_nemuro, ssvid, first_timestamp)))
+  saveRDS(dat_nemuro, cache_nemuro)
 }
-
-# Common Spatial Object / 共通空間オブジェクト
-sf_hokkaido <- st_as_sf(dat_hokkaido, coords = c("lon", "lat"), crs = 4326)
 ```
 
-# Descriptive Statistics Table / 記述統計表 (`gt`)
+# 記述統計
 
-```{r gt_descriptive_statistics}
-# ==============================================================================
-# Step 3: Summary Statistics Table using `gt` / 年別記述統計表の生成
-# Includes: Unique Vessels, Total Vessel-Days, Total Fishing & Active Hours
-# 個別隻数、延べ隻数、総操業時間、総活動時間などを包含
-# ==============================================================================
+## table01 年別記述統計
 
-summary_gt_table <- dat_hokkaido %>%
-  filter(best_known_flag == "RUS", best_vessel_class == "trawlers") %>%
-  mutate(date_col = as.Date(first_timestamp)) %>%
-  group_by(year_num) %>%
+**延べ隻日**：船×日の組み合わせ数。新聞などの「延べ隻数」と比べる指標（RQ1）。
+
+```{r table01-annual}
+table01_annual <- dat_nemuro %>%
+  group_by(year) %>%
   summarise(
-    unique_vessels        = n_distinct(ssvid),
-    total_vessel_days     = n_distinct(paste0(ssvid, "_", date_col)),
-    total_fishing_hours   = sum(fishing_hours, na.rm = TRUE),
-    total_active_hours    = sum(active_hours, na.rm = TRUE),
-    mean_hours_per_vessel = total_fishing_hours / unique_vessels,
-    .groups               = "drop"
+    n_vessels      = n_distinct(ssvid),
+    vessel_days    = n_distinct(ssvid, date),
+    fishing_hours  = sum(fishing_hours, na.rm = TRUE),
+    hours_per_ship = fishing_hours / n_vessels,
+    mean_gt        = mean(best_tonnage_gt, na.rm = TRUE),
+    .groups = "drop"
   ) %>%
-  rename(Year = year_num) %>%
   gt() %>%
-  tab_header(
-    title    = "Annual Summary Statistics of Russian Trawlers in Hokkaido/Northern Territories EEZ",
-    subtitle = "北海道・北方領土周辺EEZにおけるロシアトロール船の年別記述統計 (2018–2025)"
-  ) %>%
-  cols_label(
-    Year                  = "Year / 年",
-    unique_vessels        = "Unique Vessels / 個別隻数",
-    total_vessel_days     = "Total Vessel-Days / 延べ隻数 (日)",
-    total_fishing_hours   = "Total Fishing Hours / 総操業時間 (hr)",
-    total_active_hours    = "Total Active Hours / 総活動時間 (hr)",
-    mean_hours_per_vessel = "Mean Hours / 隻 / 1隻平均操業時間 (hr)"
-  ) %>%
-  fmt_number(
-    columns  = c(unique_vessels, total_vessel_days),
-    decimals = 0,
-    use_seps = TRUE
-  ) %>%
-  fmt_number(
-    columns  = c(total_fishing_hours, total_active_hours, mean_hours_per_vessel),
-    decimals = 1,
-    use_seps = TRUE
-  ) %>%
-  data_color(
-    columns = c(total_fishing_hours),
-    fn      = scales::col_numeric(palette = "Blues", domain = NULL)
-  ) %>%
-  tab_options(
-    heading.title.font.size    = px(16),
-    heading.subtitle.font.size = px(12),
-    column_labels.font.weight  = "bold",
-    table.border.top.style     = "solid",
-    table.border.top.width     = px(2),
-    table.border.bottom.style  = "solid",
-    table.border.bottom.width  = px(2)
-  )
+  tab_header(title = "table01 根室海峡におけるロシアトロール船の年別記述統計",
+             subtitle = sprintf("%d–%d年、GFW日次データ", min(YEARS), max(YEARS))) %>%
+  cols_label(year = "年", n_vessels = "隻数", vessel_days = "延べ隻日",
+             fishing_hours = "総漁獲時間 (h)", hours_per_ship = "1隻あたり漁獲時間 (h)",
+             mean_gt = "平均総トン数") %>%
+  fmt_number(columns = c(n_vessels, vessel_days), decimals = 0) %>%
+  fmt_number(columns = c(fishing_hours, hours_per_ship, mean_gt), decimals = 1)
 
-# Output gt Table / gtテーブルの出力
-summary_gt_table
+table01_annual
+save_table(table01_annual)
 ```
 
-# Temporal Trend Analysis / 時系列トレンド分析
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
 
-```{r plot_monthly_timeseries}
-# ==============================================================================
-# Step 4: Monthly Fishing Effort Timeseries / 月別総操業時間の推移描画
-# ==============================================================================
-monthly_summary <- dat_hokkaido %>%
-  filter(best_known_flag == "RUS", best_vessel_class == "trawlers") %>%
-  group_by(year_num, month_num) %>%
-  summarise(
-    total_fishing_hours = sum(fishing_hours, na.rm = TRUE),
-    n_vessels           = n_distinct(ssvid),
-    .groups             = "drop"
-  )
+## plot02 月別延べ隻日の推移
 
-ggplot(monthly_summary, aes(x = month_num, y = total_fishing_hours, color = factor(year_num), group = year_num)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  scale_x_continuous(breaks = 1:12) +
-  scale_y_continuous(labels = scales::comma) +
-  labs(
-    title    = "Monthly Fishing Effort of Russian Trawlers (2018–2025)",
-    subtitle = "ロシアトロール船の月別総操業時間推移",
-    x        = "Month / 月",
-    y        = "Total Fishing Hours / 総操業時間 (時間)",
-    color    = "Year / 年"
-  ) +
-  theme_minimal() +
-  theme(panel.grid.minor = element_blank())
+```{r plot02-monthly, fig.width=10, fig.height=5}
+monthly <- dat_nemuro %>%
+  mutate(ym = floor_date(date, "month")) %>%
+  group_by(ym) %>%
+  summarise(vessel_days = n_distinct(ssvid, date), .groups = "drop") %>%
+  complete(ym = seq(make_date(min(YEARS)), make_date(max(YEARS), 12), by = "month"),
+           fill = list(vessel_days = 0))
+
+plot02_monthly <- ggplot(monthly, aes(ym, vessel_days)) +
+  geom_col(fill = "steelblue") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(title = "plot02 根室海峡におけるロシアトロール船の月別延べ隻日",
+       x = "年月", y = "延べ隻日")
+
+plot02_monthly
+save_plot(plot02_monthly, width = 10, height = 5)
 ```
 
-# Spatial Grid Analysis / 空間グリッド（メッシュ）解析
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
 
-```{r spatial_grid_analysis}
-# ==============================================================================
-# Step 5: Spatial Grid Aggregation (0.1 x 0.1 degree) / 0.1度メッシュ解析
-# Aggregating fishing effort into spatial grids / 空間グリッドへの操業努力量集計
-# ==============================================================================
+## plot03 季節別の操業分布
 
-# Define Spatial Bounding Box & Cell Size (0.1 deg approx. 10km) / メッシュサイズ設定
-grid_size <- 0.1
+0.05度グリッド（約5km）ごとの総漁獲時間。
 
-bbox <- st_bbox(c(xmin = 139.0, xmax = 160.0, ymin = 41.5, ymax = 50.0), crs = st_crs(4326))
-fish_grid <- st_make_grid(st_as_sfc(bbox), cellsize = c(grid_size, grid_size), square = TRUE) %>%
-  st_sf() %>%
-  mutate(grid_id = row_number())
-
-# Spatial join point data to grid cells / ポイントデータをグリッドへ割り当て
-sf_trawlers <- sf_hokkaido %>% filter(best_known_flag == "RUS", best_vessel_class == "trawlers")
-
-grid_summary <- st_join(fish_grid, sf_trawlers, join = st_contains) %>%
-  group_by(grid_id) %>%
-  summarise(
-    total_hours = sum(fishing_hours, na.rm = TRUE),
-    n_vessels   = n_distinct(ssvid, na.rm = TRUE),
-    .groups     = "drop"
-  ) %>%
-  filter(total_hours > 0)
-
-# Base Map Layer / 背景地図データの準備
-land_sf <- ne_countries(country = c('japan', 'russia'), scale = "medium", returnclass = "sf")
-
-# Plot Spatial Distribution Map / 空間努力量分布マップの表示
-ggplot() +
-  geom_sf(data = land_sf, fill = "gray90", color = "gray70") +
-  geom_sf(data = grid_summary, aes(fill = total_hours), color = NA) +
-  scale_fill_viridis_c(
-    option = "inferno", 
-    trans  = "log10", 
-    labels = scales::comma,
-    name   = "Fishing Hours\n(log10 scale)"
-  ) +
-  coord_sf(xlim = c(139.0, 155.0), ylim = c(41.5, 48.5), expand = FALSE) +
-  labs(
-    title    = "Spatial Distribution of Russian Trawl Fishing Effort (2018–2025)",
-    subtitle = "ロシアトロール船の累積操業時間空間分布 (0.1°グリッド集計)",
-    x        = "Longitude / 経度",
-    y        = "Latitude / 緯度"
-  ) +
-  theme_bw() +
-  theme(
-    legend.position = "right",
-    panel.grid.major = element_line(color = "gray95")
-  )
-```
-
-
-
-
-
-```{r nemuro_straits_grid_analysis_005, fig.width=10, fig.height=8}
-# ==============================================================================
-# 根室海峡周辺の 0.05度グリッド集計 & 背景地図付き空間分布マップ
-# ==============================================================================
-
-# 1. 陸地データの取得
-land <- rnaturalearth::ne_countries(scale = "large", returnclass = "sf")
-
-# 2. 根室海峡エリアの抽出 & 0.05度グリッドへの丸め処理（メッシュ化）
-dat_nemuro_grid <- dat_hokkaido %>%
-  filter(best_known_flag == "RUS", best_vessel_class == "trawlers") %>%
-  filter(
-    lon >= 144.8 & lon <= 146.0,
-    lat >= 43.5  & lat <= 44.5
-  ) %>%
-  mutate(
-    # 0.05度単位（約5km区画）でグリッド化
-    grid_lon = round(lon / 0.05) * 0.05,
-    grid_lat = round(lat / 0.05) * 0.05,
-    month_num = month(first_timestamp),
-    season = case_when(
-      month_num %in% 3:5  ~ "春季 (3-5月)",
-      month_num %in% 6:8  ~ "夏季 (6-8月)",
-      month_num %in% 9:11 ~ "秋季 (9-11月)",
-      TRUE                ~ "冬季 (12-2月)"
-    ),
-    season = factor(season, levels = c("春季 (3-5月)", "夏季 (6-8月)", "秋季 (9-11月)", "冬季 (12-2月)"))
-  ) %>%
+```{r plot03-season-grid, fig.width=10, fig.height=9}
+grid_season <- dat_nemuro %>%
+  mutate(grid_lon = round(avg_lon / 0.05) * 0.05,
+         grid_lat = round(avg_lat / 0.05) * 0.05) %>%
   group_by(season, grid_lon, grid_lat) %>%
-  summarise(total_fishing_hours = sum(fishing_hours, na.rm = TRUE), .groups = "drop")
+  summarise(fishing_hours = sum(fishing_hours, na.rm = TRUE), .groups = "drop")
 
-# 3. 根室海峡のバウンディングボックス
-nemuro_bbox <- st_bbox(c(xmin = 144.8, xmax = 146.0, ymin = 43.5, ymax = 44.5), crs = st_crs(4326))
+plot03_season_grid <- ggplot() +
+  geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_tile(data = grid_season, aes(grid_lon, grid_lat, fill = fishing_hours),
+            width = 0.05, height = 0.05, alpha = 0.85) +
+  scale_fill_viridis_c(option = "magma", name = "総漁獲時間 (h)") +
+  coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  facet_wrap(~season, ncol = 2, drop = FALSE) +
+  labs(title = "plot03 根室海峡におけるロシアトロール船の季節別操業分布",
+       subtitle = sprintf("%d–%d年合計、0.05度グリッド", min(YEARS), max(YEARS)),
+       x = "経度", y = "緯度") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-# ------------------------------------------------------------------------------
-# 季節別 0.05度グリッドヒートマップの描画
-# ------------------------------------------------------------------------------
-p_nemuro_grid_map <- ggplot() +
-  # 背景の陸地（グレー）
-  geom_sf(data = land, fill = "gray85", color = "gray60", size = 0.2) +
-  # 0.05度メッシュのヒートマップ（width と height でセルサイズを指定）
-  geom_tile(
-    data = dat_nemuro_grid,
-    aes(x = grid_lon, y = grid_lat, fill = total_fishing_hours),
-    width = 0.05,
-    height = 0.05,
-    alpha = 0.85
-  ) +
-  scale_fill_viridis_c(option = "magma", name = "総操業時間 (hr)") +
-  coord_sf(
-    xlim = c(nemuro_bbox["xmin"], nemuro_bbox["xmax"]),
-    ylim = c(nemuro_bbox["ymin"], nemuro_bbox["ymax"]),
-    expand = FALSE
-  ) +
-  facet_wrap(~season, ncol = 2) +
-  labs(
-    title = "Seasonal Grid Map of Russian Trawlers in Nemuro Strait (0.05° Mesh)",
-    subtitle = "根室海峡周辺におけるロシアトロール船の季節別操業密度（0.05度メッシュ集計）",
-    x = "経度 (Longitude)",
-    y = "緯度 (Latitude)"
-  ) +
-  theme_bw(base_family = "sans") +
-  theme(
-    strip.background = element_rect(fill = "gray90"),
-    strip.text = element_text(face = "bold"),
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  )
-
-print(p_nemuro_grid_map)
+plot03_season_grid
+save_plot(plot03_season_grid, width = 10, height = 9)
 ```
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
