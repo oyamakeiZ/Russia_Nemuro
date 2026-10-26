@@ -31,6 +31,82 @@ knitr::opts_chunk$set(
 
 ```
 
+# Research Design / 研究設計 {.unnumbered}
+
+> Living section: update as results come in. / 結果が出るたびに更新する。
+
+## Argument
+
+::: {.panel-tabset group="language"}
+### 日本語
+::: {.callout-important title="Argument（中心命題）"}
+根室海峡のロシアトロール船について、地元がこれまで根拠にできたのは目視による延べ隻数だけだった。GFWのAISデータは、操業の増加に加えて、浅海域への進出・夏季操業・特定船舶への集中を船別・場所別に定量化でき、地元の要請を実証的に裏付ける（あるいは修正する）独立した監視手段となる。
+:::
+### English
+::: {.callout-important title="Argument"}
+Local communities around the Nemuro Strait have so far relied only on visual counts of Russian trawlers (vessel-days) to support their claims. Global Fishing Watch (GFW) AIS data can quantify not only the increase in fishing activity but also the expansion into shallow waters, summer operations, and concentration among specific vessels, at the vessel and location level. GFW therefore provides an independent monitoring tool that can empirically support, or correct, the communities' requests.
+:::
+:::
+
+## Research Questions
+
+::: {.panel-tabset group="language"}
+### 日本語
+| RQ | 問い | 検証する地元の主張（水産経済新聞 2026-10-15） |
+|---|---|---|
+| **RQ1 検出** | GFWは根室海峡のロシアトロール船の操業とその増加を捉えているか | 「過去10年以上で最多」「今年は8月末で延べ239隻」 |
+| **RQ2 検証** | 地元の訴え（浅海域化・夏季化・標津／別海沖への拡大・大型化）はGFWデータで裏付けられるか | 「水深25mの浅海域」「一昨年から夏にも」「標津町沖や別海町沖」「1,500トン級」 |
+| **RQ3 付加価値** | 目視の延べ隻数では見えない情報（船別操業時間、集中度、日本側漁場との距離）をGFWはどこまで提供できるか | 「現地での実態確認」の要請 |
+
+### English
+| RQ | Question | Local claim tested (Suisan Keizai Shimbun, 2026-10-15) |
+|---|---|---|
+| **RQ1 Detection** | Does GFW detect Russian trawler activity in the Nemuro Strait and its recent increase? | "Highest in over 10 years"; "239 vessel-days by end of August this year" |
+| **RQ2 Verification** | Do GFW data support the local claims of expansion into shallow waters, summer operations, the Shibetsu/Betsukai coast, and larger vessels? | "Shallow waters of 25 m depth"; "also in summer since two years ago"; "off Shibetsu and Betsukai"; "1,500-tonne class" |
+| **RQ3 Added value** | What information invisible to visual counts (fishing hours per vessel, concentration, distance to Japanese fishing grounds) can GFW provide? | Request for "on-site verification of actual conditions" |
+:::
+
+## Anticipated Counterarguments / 想定反論
+
+::: {.panel-tabset group="language"}
+### 日本語
+| # | 想定反論 | 対処 | 残存リスク | 状態 |
+|---|---|---|---|---|
+| 1 | AISを切った船は見えず、GFWは過小評価する | RQ1で既存の隻数と比較し捕捉率を示す。限界を明記 | 高 | 未 |
+| 2 | 日平均位置では狭い海峡での位置判定を誤る | 時間別・位置別データで感度分析 | 中 | 未 |
+| 3 | GFWの漁業判定が誤り（移動・待機を漁業と判定） | 速度分布の確認、トロール船に限定 | 中 | 未 |
+| 4 | 目視の隻数で十分で、GFWは不要 | RQ3で目視では得られない情報を具体的に示す | 低 | 未 |
+| 5 | 中間ラインのロシア側での操業なので問題ない | 違法性は主張しない。論点は共同資源管理の不在と被害の実態 | 低 | 未 |
+
+### English
+| # | Counterargument | Response | Remaining risk | Status |
+|---|---|---|---|---|
+| 1 | Vessels that switch off AIS are invisible, so GFW underestimates activity | Compare with existing visual counts in RQ1 to estimate the detection rate; state limitations explicitly | High | Open |
+| 2 | Daily mean positions misplace vessels in the narrow strait | Sensitivity analysis with hourly / position-level data | Medium | Open |
+| 3 | GFW misclassifies transit or idling as fishing | Check speed distributions; restrict to trawlers | Medium | Open |
+| 4 | Visual counts are sufficient; GFW adds nothing | Show concrete information unavailable from visual counts (RQ3) | Low | Open |
+| 5 | Fishing on the Russian side of the median line is not a problem | We make no claim of illegality; the issue is the absence of joint stock management and the documented damage | Low | Open |
+:::
+
+## So What / 意義
+
+::: {.panel-tabset group="language"}
+### 日本語
+1. **地元・政策**：3町の要請に客観的データで応え、外交交渉の材料となる
+2. **方法**：報告制度のない係争水域でも、AISで操業を監視できることを示す
+3. **学術**：どちらの管理も及ばない越境資源への漁獲圧を実証的に記録する
+
+背景：2022年6月、ロシアは北方四島周辺水域操業枠組協定（安全操業）の履行停止を発表した（出典は `paper/sources.md`）。
+
+### English
+1. **Local & policy**: Answers the three towns' requests with objective data and provides evidence for diplomatic negotiations.
+2. **Methodological**: Demonstrates that AIS can monitor fishing in disputed waters where no reporting system exists.
+3. **Academic**: Empirically documents fishing pressure on a transboundary stock that falls outside either country's management.
+
+Context: In June 2022, Russia announced the suspension of the Japan–Russia framework agreement on fishing around the Northern Territories (see `paper/sources.md`).
+:::
+
+
 ```{r libraries}
 # Load Required Libraries / 必要なライブラリの読み込み
 library(here)
