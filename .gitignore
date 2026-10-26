@@ -1,0 +1,16 @@
+# Data (GFW-derived; do not publish raw/processed data)
+data/raw/*
+data/processed/*
+!data/**/.gitkeep
+
+# Rendered outputs (regenerate from qmd)
+*.html
+*_files/
+.quarto/
+
+# R / OS
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store
+.Renviron
