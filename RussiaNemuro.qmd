@@ -481,13 +481,20 @@ save_plot(plot03_monthly, width = 10, height = 5)
 
 ## plot04 季節別の操業分布
 
-**集計**：範囲② × 季節（全年の合計）× 0.05度グリッド（約5km）。色は漁獲時間の合計。
+**集計**：範囲② × 季節（全年の合計）× 0.05度グリッド（約5km）。色は漁獲時間の合計。範囲②の外（範囲①）で操業があった升目は薄いグレーで示す（参考。集計には含めない）。
 
 ```{r plot04-season-grid, fig.width=10, fig.height=9}
 to_grid <- function(dat) {
   dat %>% mutate(grid_lon = round(avg_lon / 0.05) * 0.05,
                  grid_lat = round(avg_lat / 0.05) * 0.05)
 }
+
+# 範囲②の外（範囲①には入る）の記録。地図で薄いグレーの参考表示にだけ使い、集計には入れない
+dat_outside <- dat_wide %>% filter(!in_strait)
+
+grid_season_out <- dat_outside %>%
+  to_grid() %>%
+  distinct(season, grid_lon, grid_lat)
 
 grid_season <- dat_nemuro %>%
   to_grid() %>%
@@ -497,6 +504,8 @@ grid_season <- dat_nemuro %>%
 plot04_season_grid <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
   geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
+  geom_tile(data = grid_season_out, aes(grid_lon, grid_lat), fill = "gray70", alpha = 0.5,
+            width = 0.05, height = 0.05) +
   geom_tile(data = grid_season, aes(grid_lon, grid_lat, fill = fishing_hours),
             width = 0.05, height = 0.05, alpha = 0.85) +
   scale_fill_viridis_c(option = "magma", name = "総漁獲時間 (h)") +
@@ -504,7 +513,7 @@ plot04_season_grid <- ggplot() +
   scale_x_continuous(breaks = c(145.0, 145.5)) +
   facet_wrap(~season, ncol = 2, drop = FALSE) +
   labs(title = "plot04 根室海峡におけるロシアトロール船の季節別操業分布",
-       subtitle = sprintf("範囲② 海峡のみ（破線）、%d–%d年合計、0.05度グリッド", min(YEARS), max(YEARS)),
+       subtitle = sprintf("範囲② 海峡のみ（破線）、%d–%d年合計、0.05度グリッド。グレーは範囲外の操業（参考）", min(YEARS), max(YEARS)),
        x = "経度", y = "緯度")
 
 plot04_season_grid
@@ -520,6 +529,10 @@ save_plot(plot04_season_grid, width = 10, height = 9)
 **集計**：範囲② × 年 × 0.05度グリッド。plot05 と plot06 で同じ集計表 `grid_year` を使う。
 
 ```{r grid-year}
+grid_year_out <- dat_outside %>%
+  to_grid() %>%
+  distinct(year, grid_lon, grid_lat)
+
 grid_year <- dat_nemuro %>%
   to_grid() %>%
   group_by(year, grid_lon, grid_lat) %>%
@@ -532,6 +545,8 @@ grid_year <- dat_nemuro %>%
 plot05_year_grid_vd <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
   geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
+  geom_tile(data = grid_year_out, aes(grid_lon, grid_lat), fill = "gray70", alpha = 0.5,
+            width = 0.05, height = 0.05) +
   geom_tile(data = grid_year, aes(grid_lon, grid_lat, fill = vessel_days),
             width = 0.05, height = 0.05) +
   scale_fill_viridis_c(option = "viridis", name = "延べ隻日") +
@@ -539,7 +554,7 @@ plot05_year_grid_vd <- ggplot() +
   scale_x_continuous(breaks = c(145.0, 145.5)) +
   facet_wrap(~year, ncol = 4) +
   labs(title = "plot05 根室海峡におけるロシアトロール船の年別延べ隻日",
-       subtitle = "範囲② 海峡のみ（破線）、0.05度グリッド",
+       subtitle = "範囲② 海峡のみ（破線）、0.05度グリッド。グレーは範囲外の操業（参考、集計には含めない）",
        x = "経度", y = "緯度")
 
 plot05_year_grid_vd
@@ -558,6 +573,8 @@ save_plot(plot05_year_grid_vd, width = 12, height = 8)
 plot06_year_grid_fh <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
   geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
+  geom_tile(data = grid_year_out, aes(grid_lon, grid_lat), fill = "gray70", alpha = 0.5,
+            width = 0.05, height = 0.05) +
   geom_tile(data = grid_year, aes(grid_lon, grid_lat, fill = fishing_hours),
             width = 0.05, height = 0.05) +
   scale_fill_viridis_c(option = "magma", trans = "log10", labels = scales::label_number(),
@@ -566,7 +583,7 @@ plot06_year_grid_fh <- ggplot() +
   scale_x_continuous(breaks = c(145.0, 145.5)) +
   facet_wrap(~year, ncol = 4) +
   labs(title = "plot06 根室海峡におけるロシアトロール船の年別総漁獲時間",
-       subtitle = "範囲② 海峡のみ（破線）、0.05度グリッド",
+       subtitle = "範囲② 海峡のみ（破線）、0.05度グリッド。グレーは範囲外の操業（参考、集計には含めない）",
        x = "経度", y = "緯度")
 
 plot06_year_grid_fh
