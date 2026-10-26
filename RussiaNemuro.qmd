@@ -153,7 +153,7 @@ VESSEL_CLASS <- "trawlers"
 # 共有ドライブから切り出す範囲（分析範囲より広め。範囲を変えても再抽出しなくて済むように）
 EXTRACT_BBOX <- c(xmin = 139.0, xmax = 160.0, ymin = 41.5, ymax = 50.0)
 
-# 分析範囲：根室海峡（経度・緯度）
+# 分析範囲①：根室海峡周辺（広域）の経度・緯度。海峡のみの範囲②は 2.3 で作る
 AREA_NEMURO <- c(xmin = 144.8, xmax = 146.0, ymin = 43.2, ymax = 44.5)
 ```
 
@@ -226,15 +226,54 @@ for (y in YEARS) {
 
 ## 分析範囲の作成
 
-**目的**：根室海峡の範囲（`AREA_NEMURO`）から陸地を除いた海域ポリゴン `area_nemuro` を作る。
+分析範囲は2つある。**すべての集計は範囲②（海峡のみ）で行う**。範囲①は、範囲②を作るための外枠と、新聞の報告値との比較（table02）にだけ使う。
 
-```{r area-nemuro}
+- **範囲① 広域**（`area_wide`）：`AREA_NEMURO` の四角から陸地を除いた海域。国後島の東側・南側の海も含む。
+- **範囲② 海峡のみ**（`area_strait`）：知床半島・野付半島・根室半島と国後島に挟まれた海域。
+  - 東の境界：国後島の中心線。その南端から真南に延ばして根室半島に当てる
+  - 北の境界：北緯44.33度（知床岬付近）。知床半島の西側（オホーツク海側）は含めない
+
+```{r areas}
 land_sf <- ne_countries(country = c("japan", "russia"), scale = "large", returnclass = "sf") %>%
   st_union() %>%
   st_crop(AREA_NEMURO)
 
-area_nemuro <- st_as_sfc(st_bbox(AREA_NEMURO, crs = 4326)) %>%
+# 範囲① 広域
+area_wide <- st_as_sfc(st_bbox(AREA_NEMURO, crs = 4326)) %>%
   st_difference(land_sf)
+
+# 範囲② 海峡のみ
+# (1) 国後島の中心線：緯度0.02度ごとに、島の東西の端の中点をとる
+kunashiri <- ne_countries(country = "russia", scale = "large", returnclass = "sf") %>%
+  st_union() %>%
+  st_crop(AREA_NEMURO) %>%
+  st_cast("POLYGON")
+kunashiri <- kunashiri[which.max(st_area(kunashiri))]
+
+STRAIT_NORTH <- 44.33
+kuna_lats <- seq(43.66, STRAIT_NORTH, by = 0.02)
+kuna_mid  <- map_dbl(kuna_lats, function(y) {
+  line <- st_sfc(st_linestring(rbind(c(AREA_NEMURO[["xmin"]], y), c(AREA_NEMURO[["xmax"]], y))), crs = 4326)
+  x <- st_intersection(line, kunashiri)
+  if (length(x) == 0) NA_real_ else mean(st_bbox(x)[c("xmin", "xmax")])
+})
+axis <- tibble(lon = kuna_mid, lat = kuna_lats) %>% filter(!is.na(lon)) %>% arrange(desc(lat))
+
+# (2) 西端・北の境界・国後島の中心線・南への延長で囲み、陸地を除く
+strait_outline <- rbind(
+  c(AREA_NEMURO[["xmin"]], AREA_NEMURO[["ymin"]]),
+  c(AREA_NEMURO[["xmin"]], STRAIT_NORTH),
+  cbind(axis$lon, axis$lat),
+  c(last(axis$lon), AREA_NEMURO[["ymin"]]),
+  c(AREA_NEMURO[["xmin"]], AREA_NEMURO[["ymin"]])
+)
+strait_pieces <- st_sfc(st_polygon(list(strait_outline)), crs = 4326) %>%
+  st_difference(land_sf) %>%
+  st_cast("POLYGON")
+
+# (3) 海峡の中央（145.4°E, 43.9°N）を含む海域だけを残す（知床半島の西側を落とす）
+center <- st_sfc(st_point(c(145.4, 43.9)), crs = 4326)
+area_strait <- strait_pieces[st_intersects(strait_pieces, center, sparse = FALSE)[, 1]]
 
 # 地図ラベル（位置はおおよそ）
 places <- tribble(
@@ -246,43 +285,55 @@ places <- tribble(
 )
 ```
 
-## plot01 分析範囲
+面積：範囲① `r round(sum(as.numeric(st_area(st_transform(area_wide, 32655)))) / 1e6)` km²、範囲② `r round(sum(as.numeric(st_area(st_transform(area_strait, 32655)))) / 1e6)` km²
 
-```{r plot01-area}
-plot01_area <- ggplot() +
+## plot01 分析範囲①：広域
+
+```{r plot01-area-wide}
+plot01_area_wide <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
-  geom_sf(data = area_nemuro, fill = "steelblue", alpha = 0.2, color = "steelblue") +
+  geom_sf(data = area_wide, fill = "gray50", alpha = 0.2, color = "gray40") +
   geom_text(data = places, aes(lon, lat, label = name), size = 3.5) +
   coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
-  labs(title = "plot01 分析範囲：根室海峡",
+  labs(title = "plot01 分析範囲①：根室海峡周辺（広域）",
        subtitle = sprintf("経度 %.1f–%.1f°E、緯度 %.1f–%.1f°N（陸地を除く）",
                           AREA_NEMURO["xmin"], AREA_NEMURO["xmax"], AREA_NEMURO["ymin"], AREA_NEMURO["ymax"]),
        x = "経度", y = "緯度")
 
-plot01_area
-save_plot(plot01_area)
+plot01_area_wide
+save_plot(plot01_area_wide)
+```
+
+## plot02 分析範囲②：海峡のみ
+
+```{r plot02-area-strait}
+plot02_area_strait <- ggplot() +
+  geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_strait, fill = "steelblue", alpha = 0.3, color = "steelblue") +
+  geom_path(data = axis, aes(lon, lat), linetype = "dashed", color = "steelblue") +
+  geom_text(data = places, aes(lon, lat, label = name), size = 3.5) +
+  coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  labs(title = "plot02 分析範囲②：根室海峡（海峡のみ）",
+       subtitle = sprintf("東端：国後島の中心線（破線）、北端：北緯%.2f度", STRAIT_NORTH),
+       x = "経度", y = "緯度")
+
+plot02_area_strait
+save_plot(plot02_area_strait)
 ```
 
 ## 分析範囲内のデータ抽出
 
-**目的**：ローカルのデータから `YEARS` の各年・`area_nemuro` 内の記録を取り出し、船舶情報を結合する。日付はJSTに変換する。
-**出力**：`dat_nemuro`
+ローカルのデータから `YEARS` の各年の記録を取り出し、範囲①・②に入るかを判定する。日付はJST（日本時間）に変換する。
+
+- `dat_wide`：範囲① 広域の記録（table02 の比較だけに使う）
+- `dat_nemuro`：範囲② 海峡のみの記録（**以降の集計はすべてこれ**）
 
 ```{r dat-nemuro}
 dat_bbox <- open_dataset(file.path(DAILY_RUS_DIR, paste0("rus_trawlers_", YEARS, ".parquet"))) %>%
   filter(between(avg_lon, AREA_NEMURO[["xmin"]], AREA_NEMURO[["xmax"]]),
          between(avg_lat, AREA_NEMURO[["ymin"]], AREA_NEMURO[["ymax"]])) %>%
   collect() %>%
-  distinct(ssvid, first_timestamp, .keep_all = TRUE)
-
-# 陸地上に落ちた点（日平均位置の誤差）を除く
-in_area <- dat_bbox %>%
-  st_as_sf(coords = c("avg_lon", "avg_lat"), crs = 4326, remove = FALSE) %>%
-  st_intersects(area_nemuro, sparse = FALSE) %>%
-  as.vector()
-n_on_land <- sum(!in_area)
-
-dat_nemuro <- dat_bbox[in_area, ] %>%
+  distinct(ssvid, first_timestamp, .keep_all = TRUE) %>%
   left_join(vessel_rus %>% select(-year), by = "ssvid") %>%
   mutate(ts_jst = with_tz(first_timestamp, "Asia/Tokyo"),
          date   = as.Date(ts_jst, tz = "Asia/Tokyo"),
@@ -296,16 +347,40 @@ dat_nemuro <- dat_bbox[in_area, ] %>%
            levels = c("春 (3-5月)", "夏 (6-8月)", "秋 (9-11月)", "冬 (12-2月)"))) %>%
   filter(year %in% YEARS)
 
+# 範囲①・②に入るかを判定（陸地上に落ちた点＝日平均位置の誤差はどちらにも入らない）
+pts <- st_as_sf(dat_bbox, coords = c("avg_lon", "avg_lat"), crs = 4326)
+dat_bbox <- dat_bbox %>%
+  mutate(in_wide   = st_intersects(pts, st_union(area_wide),   sparse = FALSE)[, 1],
+         in_strait = st_intersects(pts, st_union(area_strait), sparse = FALSE)[, 1])
+
+dat_wide   <- dat_bbox %>% filter(in_wide)
+dat_nemuro <- dat_bbox %>% filter(in_strait)
+n_on_land  <- sum(!dat_bbox$in_wide)
+
 stopifnot(nrow(dat_nemuro) == nrow(distinct(dat_nemuro, ssvid, first_timestamp)))
 ```
 
-陸地上で除外した記録：`r n_on_land` 件（全 `r nrow(dat_bbox)` 件中）
+- 四角の範囲内の記録：`r nrow(dat_bbox)` 件
+- うち陸地上で除外：`r n_on_land` 件
+- 範囲① 広域：`r nrow(dat_wide)` 件
+- 範囲② 海峡のみ：`r nrow(dat_nemuro)` 件
 
 # 記述統計
 
+ここから先は、特に断りがない限り次の条件で集計する。
+
+| 項目 | 条件 |
+|---|---|
+| 範囲 | **範囲② 海峡のみ**（`dat_nemuro`） |
+| 期間 | `r min(YEARS)`–`r max(YEARS)`年。年・月・日はJST（日本時間） |
+| 対象 | GFW船舶リストでロシア船籍かつトロール船の船。`fishing_hours > 0` の記録だけ |
+| 1件の記録 | 1隻の1日の1セグメント（GFW日次データ）。位置は1日の平均位置 |
+| 延べ隻日 | 船×日の組み合わせの数（同じ船の同じ日は1と数える）。新聞の「延べ隻数」に近い指標 |
+| 漁獲時間 | GFWが推定した `fishing_hours` の合計 |
+
 ## table01 年別記述統計
 
-**延べ隻日**：船×日の組み合わせ数。新聞などの「延べ隻数」と比べる指標（RQ1）。
+**集計**：範囲② × 年
 
 ```{r table01-annual}
 table01_annual <- dat_nemuro %>%
@@ -320,10 +395,10 @@ table01_annual <- dat_nemuro %>%
   ) %>%
   gt() %>%
   tab_header(title = "table01 根室海峡におけるロシアトロール船の年別記述統計",
-             subtitle = sprintf("%d–%d年、GFW日次データ", min(YEARS), max(YEARS))) %>%
+             subtitle = sprintf("範囲② 海峡のみ、%d–%d年", min(YEARS), max(YEARS))) %>%
   cols_label(year = "年", n_vessels = "隻数", vessel_days = "延べ隻日",
              fishing_hours = "総漁獲時間 (h)", hours_per_ship = "1隻あたり漁獲時間 (h)",
-             mean_gt = "平均総トン数") %>%
+             mean_gt = "平均総トン数（記録ごとの平均）") %>%
   fmt_number(columns = c(n_vessels, vessel_days), decimals = 0) %>%
   fmt_number(columns = c(fishing_hours, hours_per_ship, mean_gt), decimals = 1)
 
@@ -335,9 +410,53 @@ save_table(table01_annual)
 （記入）
 :::
 
-## plot02 月別延べ隻日の推移
+## table02 新聞の報告値との比較
 
-```{r plot02-monthly, fig.width=10, fig.height=5}
+**集計**：範囲①と範囲② × 年。1〜8月と年間。
+
+新聞の「8月末現在」という数え方に合わせ、1〜8月の値も出す。報告値は水産経済新聞（2026-10-15、`paper/sources.md` #11）による。
+
+```{r table02-reported}
+reported <- tibble(year = 2025, reported = 239) # 新聞の報告値（延べ隻数）
+
+count_vd <- function(dat, suffix) {
+  dat %>%
+    group_by(year) %>%
+    summarise(jan_aug = n_distinct(ssvid[month <= 8], date[month <= 8]),
+              full    = n_distinct(ssvid, date),
+              .groups = "drop") %>%
+    rename_with(~ paste0(.x, "_", suffix), -year)
+}
+
+table02_reported <- count_vd(dat_wide, "wide") %>%
+  left_join(count_vd(dat_nemuro, "strait"), by = "year") %>%
+  left_join(reported, by = "year") %>%
+  gt() %>%
+  tab_header(title = "table02 延べ隻日：GFWと新聞の報告値",
+             subtitle = "範囲① 広域と範囲② 海峡のみ") %>%
+  tab_spanner("範囲① 広域", columns = ends_with("_wide")) %>%
+  tab_spanner("範囲② 海峡のみ", columns = ends_with("_strait")) %>%
+  cols_label(year = "年",
+             jan_aug_wide = "1〜8月", full_wide = "年間",
+             jan_aug_strait = "1〜8月", full_strait = "年間",
+             reported = "報告値（延べ隻数）") %>%
+  sub_missing(columns = reported, missing_text = "–") %>%
+  tab_footnote("水産経済新聞 2026年10月15日（年間延べ130〜200隻、2025年は延べ239隻）",
+               locations = cells_column_labels(reported))
+
+table02_reported
+save_table(table02_reported)
+```
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
+
+## plot03 月別延べ隻日の推移
+
+**集計**：範囲② × 年月（JST）。記録がない月は0。
+
+```{r plot03-monthly, fig.width=10, fig.height=5}
 monthly <- dat_nemuro %>%
   mutate(ym = floor_date(date, "month")) %>%
   group_by(ym) %>%
@@ -345,144 +464,124 @@ monthly <- dat_nemuro %>%
   complete(ym = seq(make_date(min(YEARS)), make_date(max(YEARS), 12), by = "month"),
            fill = list(vessel_days = 0))
 
-plot02_monthly <- ggplot(monthly, aes(ym, vessel_days)) +
+plot03_monthly <- ggplot(monthly, aes(ym, vessel_days)) +
   geom_col(fill = "steelblue") +
   scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
-  labs(title = "plot02 根室海峡におけるロシアトロール船の月別延べ隻日",
+  labs(title = "plot03 根室海峡におけるロシアトロール船の月別延べ隻日",
+       subtitle = "範囲② 海峡のみ",
        x = "年月", y = "延べ隻日")
 
-plot02_monthly
-save_plot(plot02_monthly, width = 10, height = 5)
+plot03_monthly
+save_plot(plot03_monthly, width = 10, height = 5)
 ```
 
 ::: {.callout-tip title="結果メモ"}
 （記入）
 :::
 
-## plot03 季節別の操業分布
+## plot04 季節別の操業分布
 
-0.05度グリッド（約5km）ごとの総漁獲時間。
+**集計**：範囲② × 季節（全年の合計）× 0.05度グリッド（約5km）。色は漁獲時間の合計。
 
-```{r plot03-season-grid, fig.width=10, fig.height=9}
+```{r plot04-season-grid, fig.width=10, fig.height=9}
+to_grid <- function(dat) {
+  dat %>% mutate(grid_lon = round(avg_lon / 0.05) * 0.05,
+                 grid_lat = round(avg_lat / 0.05) * 0.05)
+}
+
 grid_season <- dat_nemuro %>%
-  mutate(grid_lon = round(avg_lon / 0.05) * 0.05,
-         grid_lat = round(avg_lat / 0.05) * 0.05) %>%
+  to_grid() %>%
   group_by(season, grid_lon, grid_lat) %>%
   summarise(fishing_hours = sum(fishing_hours, na.rm = TRUE), .groups = "drop")
 
-plot03_season_grid <- ggplot() +
+plot04_season_grid <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
   geom_tile(data = grid_season, aes(grid_lon, grid_lat, fill = fishing_hours),
             width = 0.05, height = 0.05, alpha = 0.85) +
   scale_fill_viridis_c(option = "magma", name = "総漁獲時間 (h)") +
   coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  scale_x_continuous(breaks = c(145.0, 145.5)) +
   facet_wrap(~season, ncol = 2, drop = FALSE) +
-  labs(title = "plot03 根室海峡におけるロシアトロール船の季節別操業分布",
-       subtitle = sprintf("%d–%d年合計、0.05度グリッド", min(YEARS), max(YEARS)),
-       x = "経度", y = "緯度") +
-  scale_x_continuous(breaks = c(145.0, 145.5)) # パネル間でラベルが重ならないように
+  labs(title = "plot04 根室海峡におけるロシアトロール船の季節別操業分布",
+       subtitle = sprintf("範囲② 海峡のみ（破線）、%d–%d年合計、0.05度グリッド", min(YEARS), max(YEARS)),
+       x = "経度", y = "緯度")
 
-plot03_season_grid
-save_plot(plot03_season_grid, width = 10, height = 9)
+plot04_season_grid
+save_plot(plot04_season_grid, width = 10, height = 9)
 ```
 
 ::: {.callout-tip title="結果メモ"}
 （記入）
 :::
 
-## plot04 年別の延べ隻日（0.05度グリッド）
+## plot05 年別の延べ隻日（0.05度グリッド）
 
-0.05度グリッド（約5km）ごとに、年別の延べ隻日（船×日の数）と総漁獲時間を集計する。plot04 と plot05 で使う。
+**集計**：範囲② × 年 × 0.05度グリッド。plot05 と plot06 で同じ集計表 `grid_year` を使う。
 
 ```{r grid-year}
 grid_year <- dat_nemuro %>%
-  mutate(grid_lon = round(avg_lon / 0.05) * 0.05,
-         grid_lat = round(avg_lat / 0.05) * 0.05) %>%
+  to_grid() %>%
   group_by(year, grid_lon, grid_lat) %>%
   summarise(vessel_days   = n_distinct(ssvid, date),
             fishing_hours = sum(fishing_hours, na.rm = TRUE),
             .groups = "drop")
 ```
 
-```{r plot04-year-grid-vd, fig.width=12, fig.height=8}
-plot04_year_grid_vd <- ggplot() +
+```{r plot05-year-grid-vd, fig.width=12, fig.height=8}
+plot05_year_grid_vd <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
   geom_tile(data = grid_year, aes(grid_lon, grid_lat, fill = vessel_days),
             width = 0.05, height = 0.05) +
   scale_fill_viridis_c(option = "viridis", name = "延べ隻日") +
   coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  scale_x_continuous(breaks = c(145.0, 145.5)) +
   facet_wrap(~year, ncol = 4) +
-  labs(title = "plot04 根室海峡におけるロシアトロール船の年別延べ隻日",
-       subtitle = "0.05度グリッド",
-       x = "経度", y = "緯度") +
-  scale_x_continuous(breaks = c(145.0, 145.5)) # パネル間でラベルが重ならないように
+  labs(title = "plot05 根室海峡におけるロシアトロール船の年別延べ隻日",
+       subtitle = "範囲② 海峡のみ（破線）、0.05度グリッド",
+       x = "経度", y = "緯度")
 
-plot04_year_grid_vd
-save_plot(plot04_year_grid_vd, width = 12, height = 8)
+plot05_year_grid_vd
+save_plot(plot05_year_grid_vd, width = 12, height = 8)
 ```
 
 ::: {.callout-tip title="結果メモ"}
 （記入）
 :::
 
-## plot05 年別の総漁獲時間（0.05度グリッド）
+## plot06 年別の総漁獲時間（0.05度グリッド）
 
-```{r plot05-year-grid-fh, fig.width=12, fig.height=8}
-plot05_year_grid_fh <- ggplot() +
+**集計**：範囲② × 年 × 0.05度グリッド。色は対数軸。
+
+```{r plot06-year-grid-fh, fig.width=12, fig.height=8}
+plot06_year_grid_fh <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
   geom_tile(data = grid_year, aes(grid_lon, grid_lat, fill = fishing_hours),
             width = 0.05, height = 0.05) +
-  scale_fill_viridis_c(option = "magma", trans = "log10", labels = scales::label_number(), name = "総漁獲時間 (h)\n(対数軸)") +
+  scale_fill_viridis_c(option = "magma", trans = "log10", labels = scales::label_number(),
+                       name = "総漁獲時間 (h)\n(対数軸)") +
   coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  scale_x_continuous(breaks = c(145.0, 145.5)) +
   facet_wrap(~year, ncol = 4) +
-  labs(title = "plot05 根室海峡におけるロシアトロール船の年別総漁獲時間",
-       subtitle = "0.05度グリッド",
-       x = "経度", y = "緯度") +
-  scale_x_continuous(breaks = c(145.0, 145.5)) # パネル間でラベルが重ならないように
+  labs(title = "plot06 根室海峡におけるロシアトロール船の年別総漁獲時間",
+       subtitle = "範囲② 海峡のみ（破線）、0.05度グリッド",
+       x = "経度", y = "緯度")
 
-plot05_year_grid_fh
-save_plot(plot05_year_grid_fh, width = 12, height = 8)
+plot06_year_grid_fh
+save_plot(plot06_year_grid_fh, width = 12, height = 8)
 ```
 
 ::: {.callout-tip title="結果メモ"}
 （記入）
 :::
 
-## table02 1〜8月の累積延べ隻日
+## plot07 水深帯別の漁獲時間
 
-新聞の「8月末現在」という数え方に合わせ、各年1〜8月の延べ隻日を年間値と並べる。報告値は水産経済新聞（2026-10-15）による（`paper/sources.md` #11）。
+**集計**：範囲② × 年 × 水深帯。水深は `avg_depth_fishing_m`（GFWが推定した、漁獲中の位置の平均水深）。記事の「水深25mの浅海域」を検証する。
 
-```{r table02-jan-aug}
-reported <- tibble(year = 2025, reported = 239) # 新聞の報告値（延べ隻数）
-
-table02_jan_aug <- dat_nemuro %>%
-  group_by(year) %>%
-  summarise(vd_jan_aug = n_distinct(ssvid[month <= 8], date[month <= 8]),
-            vd_year    = n_distinct(ssvid, date),
-            .groups = "drop") %>%
-  left_join(reported, by = "year") %>%
-  gt() %>%
-  tab_header(title = "table02 根室海峡におけるロシアトロール船の延べ隻日（1〜8月と年間）",
-             subtitle = "GFW日次データと新聞の報告値") %>%
-  cols_label(year = "年", vd_jan_aug = "1〜8月 延べ隻日", vd_year = "年間 延べ隻日",
-             reported = "報告値（延べ隻数）") %>%
-  sub_missing(columns = reported, missing_text = "–") %>%
-  tab_footnote("報告値：水産経済新聞 2026年10月15日（年間延べ130〜200隻、2025年は延べ239隻）",
-               locations = cells_column_labels(reported))
-
-table02_jan_aug
-save_table(table02_jan_aug)
-```
-
-::: {.callout-tip title="結果メモ"}
-（記入）
-:::
-
-## plot06 水深帯別の漁獲時間
-
-`avg_depth_fishing_m`（漁獲中の位置の平均水深）を水深帯に分け、年別に漁獲時間を積み上げる。記事の「水深25mの浅海域」を検証する。
-
-```{r plot06-depth, fig.width=10, fig.height=6}
+```{r plot07-depth, fig.width=10, fig.height=6}
 depth_year <- dat_nemuro %>%
   mutate(depth_class = cut(-avg_depth_fishing_m,
                            breaks = c(-Inf, 25, 50, 100, 200, Inf),
@@ -491,26 +590,26 @@ depth_year <- dat_nemuro %>%
   group_by(year, depth_class) %>%
   summarise(fishing_hours = sum(fishing_hours, na.rm = TRUE), .groups = "drop")
 
-plot06_depth <- ggplot(depth_year, aes(factor(year), fishing_hours, fill = depth_class)) +
+plot07_depth <- ggplot(depth_year, aes(factor(year), fishing_hours, fill = depth_class)) +
   geom_col() +
   scale_fill_viridis_d(option = "mako", direction = -1, name = "水深帯") +
-  labs(title = "plot06 根室海峡におけるロシアトロール船の水深帯別漁獲時間",
-       subtitle = "漁獲中の位置の平均水深（GFW）による分類",
+  labs(title = "plot07 根室海峡におけるロシアトロール船の水深帯別漁獲時間",
+       subtitle = "範囲② 海峡のみ、漁獲中の位置の平均水深（GFW）",
        x = "年", y = "総漁獲時間 (h)")
 
-plot06_depth
-save_plot(plot06_depth, width = 10, height = 6)
+plot07_depth
+save_plot(plot07_depth, width = 10, height = 6)
 ```
 
 ::: {.callout-tip title="結果メモ"}
 （記入）
 :::
 
-## plot07 北海道沿岸からの距離
+## plot08 北海道沿岸からの距離
 
-各記録の位置から北海道の海岸線（Natural Earth の日本の陸地）までの最短距離を求め、距離帯別に年別の漁獲時間を積み上げる。国後島などの海岸は含めない（GFWの `avg_distance_from_shore` は国後島も含むため使わない）。
+**集計**：範囲② × 年 × 距離帯。距離は、1日の平均位置から北海道の海岸線（Natural Earth の日本の陸地）までの最短距離。国後島の海岸は含めない（GFWの `avg_distance_from_shore` は国後島も含むので使わない）。
 
-```{r plot07-distance, fig.width=10, fig.height=6}
+```{r plot08-distance, fig.width=10, fig.height=6}
 hokkaido_sf <- ne_countries(country = "japan", scale = "large", returnclass = "sf") %>%
   st_union() %>%
   st_crop(c(xmin = 144.0, xmax = 146.5, ymin = 42.8, ymax = 44.8)) %>%
@@ -529,15 +628,116 @@ dist_year <- dat_nemuro %>%
   group_by(year, dist_class) %>%
   summarise(fishing_hours = sum(fishing_hours, na.rm = TRUE), .groups = "drop")
 
-plot07_distance <- ggplot(dist_year, aes(factor(year), fishing_hours, fill = dist_class)) +
+plot08_distance <- ggplot(dist_year, aes(factor(year), fishing_hours, fill = dist_class)) +
   geom_col() +
   scale_fill_viridis_d(option = "rocket", name = "北海道沿岸\nからの距離") +
-  labs(title = "plot07 北海道沿岸からの距離帯別漁獲時間",
-       subtitle = "日平均位置から北海道の海岸線までの最短距離",
+  labs(title = "plot08 北海道沿岸からの距離帯別漁獲時間",
+       subtitle = "範囲② 海峡のみ、1日の平均位置から北海道の海岸線までの最短距離",
        x = "年", y = "総漁獲時間 (h)")
 
-plot07_distance
-save_plot(plot07_distance, width = 10, height = 6)
+plot08_distance
+save_plot(plot08_distance, width = 10, height = 6)
+```
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
+
+## plot09 夏の操業の割合
+
+**集計**：範囲② × 年。年間の延べ隻日のうち、夏（6–8月）と各季節が占める割合。
+
+```{r plot09-season-share, fig.width=10, fig.height=6}
+season_share <- dat_nemuro %>%
+  distinct(year, season, ssvid, date) %>%
+  count(year, season, name = "vessel_days") %>%
+  group_by(year) %>%
+  mutate(share = vessel_days / sum(vessel_days)) %>%
+  ungroup()
+
+plot09_season_share <- ggplot(season_share, aes(factor(year), share, fill = season)) +
+  geom_col() +
+  # 夏の割合だけ数字を表示（棒と同じ積み上げ位置に置くため、全季節のデータに空ラベルを付ける）
+  geom_text(aes(label = if_else(season == "夏 (6-8月)", scales::percent(share, accuracy = 1), "")),
+            position = position_stack(vjust = 0.5), color = "white", size = 3.5) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("春 (3-5月)" = "#8fbf8f", "夏 (6-8月)" = "#d9534f",
+                               "秋 (9-11月)" = "#e0a85c", "冬 (12-2月)" = "#6c8ebf"),
+                    name = "季節") +
+  labs(title = "plot09 延べ隻日に占める季節の割合",
+       subtitle = "範囲② 海峡のみ。数字は夏（6–8月）の割合",
+       x = "年", y = "延べ隻日の割合")
+
+plot09_season_share
+save_plot(plot09_season_share, width = 10, height = 6)
+```
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
+
+## table03 船別ランキング
+
+**集計**：範囲② × 船（全年の合計）。延べ隻日の多い上位10隻。船の情報はGFW船舶リストの最新年のもの。
+
+```{r table03-vessels}
+vessel_rank <- dat_nemuro %>%
+  group_by(ssvid, best_known_shipname, best_tonnage_gt, best_length_m) %>%
+  summarise(vessel_days   = n_distinct(date),
+            fishing_hours = sum(fishing_hours, na.rm = TRUE),
+            years         = paste(sort(unique(year)), collapse = ", "),
+            .groups = "drop") %>%
+  arrange(desc(vessel_days)) %>%
+  mutate(share = vessel_days / sum(vessel_days), cum_share = cumsum(share))
+
+top5_share <- vessel_rank$cum_share[5]
+
+table03_vessels <- vessel_rank %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number()) %>%
+  select(rank, best_known_shipname, ssvid, best_tonnage_gt, best_length_m,
+         vessel_days, fishing_hours, share, years) %>%
+  gt() %>%
+  tab_header(title = "table03 延べ隻日の多いロシアトロール船（上位10隻）",
+             subtitle = sprintf("範囲② 海峡のみ、%d–%d年合計。全%d隻", min(YEARS), max(YEARS), nrow(vessel_rank))) %>%
+  cols_label(rank = "順位", best_known_shipname = "船名", ssvid = "MMSI (ssvid)",
+             best_tonnage_gt = "総トン数", best_length_m = "全長 (m)",
+             vessel_days = "延べ隻日", fishing_hours = "漁獲時間 (h)",
+             share = "全体に占める割合", years = "確認された年") %>%
+  fmt_number(columns = c(best_tonnage_gt, best_length_m, fishing_hours), decimals = 0) %>%
+  fmt_percent(columns = share, decimals = 1) %>%
+  sub_missing(missing_text = "–")
+
+table03_vessels
+save_table(table03_vessels)
+```
+
+上位5隻が延べ隻日全体に占める割合：`r scales::percent(top5_share, accuracy = 0.1)`
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
+
+## plot10 総トン数の分布
+
+**集計**：範囲② × 年 × 船（その年に1日でも確認された船を1隻と数える）。総トン数はGFW船舶リストの最新年の値。破線は記事の「1,500トン級」。
+
+```{r plot10-tonnage, fig.width=10, fig.height=6}
+vessel_year <- dat_nemuro %>%
+  group_by(year, ssvid, best_tonnage_gt) %>%
+  summarise(vessel_days = n_distinct(date), .groups = "drop")
+
+plot10_tonnage <- ggplot(vessel_year, aes(factor(year), best_tonnage_gt)) +
+  geom_boxplot(outlier.shape = NA, fill = "gray90") +
+  geom_jitter(aes(size = vessel_days), width = 0.2, alpha = 0.5, color = "steelblue") +
+  geom_hline(yintercept = 1500, linetype = "dashed", color = "red") +
+  scale_size_area(max_size = 6, name = "その年の\n延べ隻日") +
+  labs(title = "plot10 確認された船の総トン数（年別）",
+       subtitle = "範囲② 海峡のみ。点は1隻（大きさはその年の延べ隻日）、赤い破線は1,500トン",
+       x = "年", y = "総トン数 (GT)")
+
+plot10_tonnage
+save_plot(plot10_tonnage, width = 10, height = 6)
 ```
 
 ::: {.callout-tip title="結果メモ"}
