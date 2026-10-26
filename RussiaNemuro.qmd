@@ -54,14 +54,14 @@ Local communities around the Nemuro Strait have so far relied only on visual cou
 ### 日本語
 | RQ | 問い | 検証する地元の主張（水産経済新聞 2026-10-15） |
 |---|---|---|
-| **RQ1 検出** | GFWは根室海峡のロシアトロール船の操業とその増加を捉えているか | 「過去10年以上で最多」「今年は8月末で延べ239隻」 |
+| **RQ1 検出** | GFWは根室海峡のロシアトロール船の操業とその増加を捉えているか | 「年間延べ130〜200隻」「昨年（2025年）は過去10年以上で最多の延べ239隻」「今年も8月末現在で昨年と同程度」 |
 | **RQ2 検証** | 地元の訴え（浅海域化・夏季化・標津／別海沖への拡大・大型化）はGFWデータで裏付けられるか | 「水深25mの浅海域」「一昨年から夏にも」「標津町沖や別海町沖」「1,500トン級」 |
 | **RQ3 付加価値** | 目視の延べ隻数では見えない情報（船別操業時間、集中度、日本側漁場との距離）をGFWはどこまで提供できるか | 「現地での実態確認」の要請 |
 
 ### English
 | RQ | Question | Local claim tested (Suisan Keizai Shimbun, 2026-10-15) |
 |---|---|---|
-| **RQ1 Detection** | Does GFW detect Russian trawler activity in the Nemuro Strait and its recent increase? | "Highest in over 10 years"; "239 vessel-days by end of August this year" |
+| **RQ1 Detection** | Does GFW detect Russian trawler activity in the Nemuro Strait and its recent increase? | "130–200 vessel-days per year"; "239 in 2025, the most in over 10 years"; "this year similar to last year as of end of August" |
 | **RQ2 Verification** | Do GFW data support the local claims of expansion into shallow waters, summer operations, the Shibetsu/Betsukai coast, and larger vessels? | "Shallow waters of 25 m depth"; "also in summer since two years ago"; "off Shibetsu and Betsukai"; "1,500-tonne class" |
 | **RQ3 Added value** | What information invisible to visual counts (fishing hours per vessel, concentration, distance to Japanese fishing grounds) can GFW provide? | Request for "on-site verification of actual conditions" |
 :::
@@ -442,6 +442,102 @@ plot05_year_grid_fh <- ggplot() +
 
 plot05_year_grid_fh
 save_plot(plot05_year_grid_fh, width = 12, height = 8)
+```
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
+
+## table02 1〜8月の累積延べ隻日
+
+新聞の「8月末現在」という数え方に合わせ、各年1〜8月の延べ隻日を年間値と並べる。報告値は水産経済新聞（2026-10-15）による（`paper/sources.md` #11）。
+
+```{r table02-jan-aug}
+reported <- tibble(year = 2025, reported = 239) # 新聞の報告値（延べ隻数）
+
+table02_jan_aug <- dat_nemuro %>%
+  group_by(year) %>%
+  summarise(vd_jan_aug = n_distinct(ssvid[month <= 8], date[month <= 8]),
+            vd_year    = n_distinct(ssvid, date),
+            .groups = "drop") %>%
+  left_join(reported, by = "year") %>%
+  gt() %>%
+  tab_header(title = "table02 根室海峡におけるロシアトロール船の延べ隻日（1〜8月と年間）",
+             subtitle = "GFW日次データと新聞の報告値") %>%
+  cols_label(year = "年", vd_jan_aug = "1〜8月 延べ隻日", vd_year = "年間 延べ隻日",
+             reported = "報告値（延べ隻数）") %>%
+  sub_missing(columns = reported, missing_text = "–") %>%
+  tab_footnote("報告値：水産経済新聞 2026年10月15日（年間延べ130〜200隻、2025年は延べ239隻）",
+               locations = cells_column_labels(reported))
+
+table02_jan_aug
+save_table(table02_jan_aug)
+```
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
+
+## plot06 水深帯別の漁獲時間
+
+`avg_depth_fishing_m`（漁獲中の位置の平均水深）を水深帯に分け、年別に漁獲時間を積み上げる。記事の「水深25mの浅海域」を検証する。
+
+```{r plot06-depth, fig.width=10, fig.height=6}
+depth_year <- dat_nemuro %>%
+  mutate(depth_class = cut(-avg_depth_fishing_m,
+                           breaks = c(-Inf, 25, 50, 100, 200, Inf),
+                           labels = c("0–25m", "25–50m", "50–100m", "100–200m", "200m以深")),
+         depth_class = fct_na_value_to_level(depth_class, "不明")) %>%
+  group_by(year, depth_class) %>%
+  summarise(fishing_hours = sum(fishing_hours, na.rm = TRUE), .groups = "drop")
+
+plot06_depth <- ggplot(depth_year, aes(factor(year), fishing_hours, fill = depth_class)) +
+  geom_col() +
+  scale_fill_viridis_d(option = "mako", direction = -1, name = "水深帯") +
+  labs(title = "plot06 根室海峡におけるロシアトロール船の水深帯別漁獲時間",
+       subtitle = "漁獲中の位置の平均水深（GFW）による分類",
+       x = "年", y = "総漁獲時間 (h)")
+
+plot06_depth
+save_plot(plot06_depth, width = 10, height = 6)
+```
+
+::: {.callout-tip title="結果メモ"}
+（記入）
+:::
+
+## plot07 北海道沿岸からの距離
+
+各記録の位置から北海道の海岸線（Natural Earth の日本の陸地）までの最短距離を求め、距離帯別に年別の漁獲時間を積み上げる。国後島などの海岸は含めない（GFWの `avg_distance_from_shore` は国後島も含むため使わない）。
+
+```{r plot07-distance, fig.width=10, fig.height=6}
+hokkaido_sf <- ne_countries(country = "japan", scale = "large", returnclass = "sf") %>%
+  st_union() %>%
+  st_crop(c(xmin = 144.0, xmax = 146.5, ymin = 42.8, ymax = 44.8)) %>%
+  st_transform(32655) # UTM 55N（距離をmで計算）
+
+dat_nemuro <- dat_nemuro %>%
+  mutate(dist_hokkaido_km = st_as_sf(., coords = c("avg_lon", "avg_lat"), crs = 4326) %>%
+           st_transform(32655) %>%
+           st_distance(hokkaido_sf) %>%
+           as.numeric() / 1000)
+
+dist_year <- dat_nemuro %>%
+  mutate(dist_class = cut(dist_hokkaido_km,
+                          breaks = c(0, 5, 10, 15, 20, Inf),
+                          labels = c("0–5km", "5–10km", "10–15km", "15–20km", "20km以上"))) %>%
+  group_by(year, dist_class) %>%
+  summarise(fishing_hours = sum(fishing_hours, na.rm = TRUE), .groups = "drop")
+
+plot07_distance <- ggplot(dist_year, aes(factor(year), fishing_hours, fill = dist_class)) +
+  geom_col() +
+  scale_fill_viridis_d(option = "rocket", name = "北海道沿岸\nからの距離") +
+  labs(title = "plot07 北海道沿岸からの距離帯別漁獲時間",
+       subtitle = "日平均位置から北海道の海岸線までの最短距離",
+       x = "年", y = "総漁獲時間 (h)")
+
+plot07_distance
+save_plot(plot07_distance, width = 10, height = 6)
 ```
 
 ::: {.callout-tip title="結果メモ"}
