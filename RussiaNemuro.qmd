@@ -52,33 +52,16 @@ library(gt)
 # 共有ドライブからは読み込みのみ、書き出しはローカルディレクトリのみ
 # ==============================================================================
 
-# 1. Primary path candidate (Local absolute path fallback for author's setup)
-# 著者環境用フォールバック絶対パス
-primary_vessel_path <- "/Users/oyamakei/Library/CloudStorage/GoogleDrive-keio@fisheries.agr.iwate-u.ac.jp/Shared drives/gakuLab_data/original/gfw/vessel_list/old/gfw_vessel_list_20250701.parquet"
-primary_daily_dir   <- "/Users/oyamakei/Library/CloudStorage/GoogleDrive-keio@fisheries.agr.iwate-u.ac.jp/Shared drives/gakuLab_data/original/gfw/daily/fixed"
-
-# 2. Get environment variable if available / 環境変数からの取得
-gakulab_env_path <- Sys.getenv("GFW_MAIN_SHARE", unset = "")
-
-# 3. Detect Vessel List File / Master船リストファイルの確定
-if (file.exists(primary_vessel_path)) {
-  VESSEL_LIST_FILE <- primary_vessel_path
-} else if (nchar(gakulab_env_path) > 0) {
-  vessel_search <- list.files(path = gakulab_env_path, pattern = "gfw_vessel_list_20250701\\.parquet$", recursive = TRUE, full.names = TRUE)
-  VESSEL_LIST_FILE <- vessel_search[1]
-} else {
-  VESSEL_LIST_FILE <- NA
+# 1. Shared-drive root from ~/.Renviron (account-independent)
+# 共有ドライブのルートは ~/.Renviron の GAKULAB_DATA で指定（アカウントに依存しない）
+GAKULAB_DATA <- Sys.getenv("GAKULAB_DATA", unset = NA)
+if (is.na(GAKULAB_DATA) || !dir.exists(GAKULAB_DATA)) {
+  stop("GAKULAB_DATA is not set or not mounted. Set it in ~/.Renviron. / ~/.Renviron に GAKULAB_DATA を設定してください。")
 }
 
-# 4. Detect Daily Fixed Data Directory / 日次データフォルダの確定
-if (dir.exists(primary_daily_dir)) {
-  GFW_DAILY_DIR <- primary_daily_dir
-} else if (nchar(gakulab_env_path) > 0) {
-  daily_search <- list.dirs(path = gakulab_env_path, recursive = TRUE, full.names = TRUE)
-  GFW_DAILY_DIR <- daily_search[str_detect(daily_search, "original/gfw/daily/fixed$")][1]
-} else {
-  GFW_DAILY_DIR <- NA
-}
+# 2. Input files / 入力ファイル
+VESSEL_LIST_FILE <- file.path(GAKULAB_DATA, "original", "gfw", "vessel_list", "old", "gfw_vessel_list_20250701.parquet")
+GFW_DAILY_DIR    <- file.path(GAKULAB_DATA, "original", "gfw", "daily", "fixed")
 
 # File existence check / 事前存在チェック
 if (is.na(VESSEL_LIST_FILE) || !file.exists(VESSEL_LIST_FILE)) {
@@ -99,7 +82,7 @@ dir.create(local_daily_rus_dir, recursive = TRUE, showWarnings = FALSE)
 fishery_type_temp <- c("trawlers")
 
 # Base Path for Shapefiles / 共有ドライブのルートパス
-gakulab_base_path <- dirname(dirname(dirname(dirname(VESSEL_LIST_FILE))))
+gakulab_base_path <- file.path(GAKULAB_DATA, "original")
 
 message(paste0(">>> Vessel list path: ", VESSEL_LIST_FILE))
 message(paste0(">>> Daily directory path: ", GFW_DAILY_DIR))
