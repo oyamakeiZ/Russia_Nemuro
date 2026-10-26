@@ -146,9 +146,12 @@ FIG_DIR       <- here("output", "fig")
 TAB_DIR       <- here("output", "tables")
 walk(c(PROCESSED_DIR, DAILY_RUS_DIR, FIG_DIR, TAB_DIR), dir.create, recursive = TRUE, showWarnings = FALSE)
 
-# 分析対象
+# 分析対象（年を足すときはここだけ変える。例：2018:2026）
 YEARS        <- 2018:2025
 VESSEL_CLASS <- "trawlers"
+
+# 共有ドライブから切り出す範囲（分析範囲より広め。範囲を変えても再抽出しなくて済むように）
+EXTRACT_BBOX <- c(xmin = 139.0, xmax = 160.0, ymin = 41.5, ymax = 50.0)
 
 # 分析範囲：根室海峡（経度・緯度）
 AREA_NEMURO <- c(xmin = 144.8, xmax = 146.0, ymin = 43.2, ymax = 44.5)
@@ -175,38 +178,49 @@ save_table <- function(tb) {
 
 ## ロシアトロール船の抽出
 
-**目的**：共有ドライブの日次データから、ロシア船籍トロール船の記録だけをローカルに切り出す（初回のみ実行）。
-**出力**：`data/processed/daily_russian_trawlers/rus_trawlers_<年>.parquet`
+**目的**：共有ドライブから、ロシア船籍トロール船の記録だけをローカルに切り出す。
+**仕組み**：年ごとにファイルを作り、**ローカルに無い年だけ**抽出する。`YEARS` に2026を足せば2026年だけが追加で抽出される。
+**出力**：`data/processed/vessel_rus_trawlers.parquet`（船舶情報）、`data/processed/daily_russian_trawlers/rus_trawlers_<年>.parquet`
 
 ```{r extract-russian-trawlers}
-if (length(list.files(DAILY_RUS_DIR, pattern = "\\.parquet$")) == 0) {
-  vessel_master <- read_parquet(VESSEL_LIST_FILE)
-
-  target_ssvids <- vessel_master %>%
+# 船舶リスト：ロシア船籍トロール船を1隻1行に（同じ ssvid×年 が重複しているため）
+vessel_file <- file.path(PROCESSED_DIR, "vessel_rus_trawlers.parquet")
+if (!file.exists(vessel_file)) {
+  open_dataset(VESSEL_LIST_FILE) %>%
     filter(best_known_flag == "RUS", best_vessel_class %in% VESSEL_CLASS) %>%
-    pull(ssvid) %>%
-    unique() %>%
-    as.character()
+    select(ssvid, year, best_known_shipname, best_tonnage_gt, best_length_m) %>%
+    collect() %>%
+    mutate(ssvid = as.character(ssvid)) %>%
+    arrange(ssvid, desc(year)) %>%
+    distinct(ssvid, .keep_all = TRUE) %>% # 最新年の情報を使う（2026年など船舶リストに無い年にも対応）
+    write_parquet(vessel_file)
+}
+vessel_rus <- read_parquet(vessel_file)
 
-  for (y in YEARS) {
-    yearly_files <- list.files(GFW_DAILY_DIR, pattern = paste0("^gfw_dat_v4_daily_", y, "_.*\\.parquet$"), full.names = TRUE)
-    valid_files  <- yearly_files[file.info(yearly_files)$size > 1000] # 空ファイルを除外
-    if (length(valid_files) == 0) next
+# 日次データ：ローカルに無い年だけ抽出
+for (y in YEARS) {
+  out_file <- file.path(DAILY_RUS_DIR, paste0("rus_trawlers_", y, ".parquet"))
+  if (file.exists(out_file)) next
 
-    df_year <- open_dataset(valid_files, format = "parquet") %>%
-      filter(ssvid %in% target_ssvids, fishing_hours > 0) %>%
-      select(ssvid, first_timestamp, avg_lat_lon, active_hours, fishing_hours) %>%
-      collect() %>%
-      mutate(
-        coords  = str_extract_all(avg_lat_lon, "[-+]?[0-9]*\\.?[0-9]+"),
-        avg_lon = as.numeric(map_chr(coords, ~ .x[1])),
-        avg_lat = as.numeric(map_chr(coords, ~ .x[2]))
-      ) %>%
-      filter(between(avg_lat, 41.5, 50.0), between(avg_lon, 139.0, 160.0)) %>%
-      select(-coords)
-
-    write_parquet(df_year, file.path(DAILY_RUS_DIR, paste0("rus_trawlers_", y, ".parquet")))
+  in_files <- list.files(GFW_DAILY_DIR, pattern = paste0("^gfw_dat_v4_daily_", y, "_.*\\.parquet$"), full.names = TRUE)
+  in_files <- in_files[file.size(in_files) > 1000] # 空ファイルを除外
+  if (length(in_files) == 0) {
+    message(y, "年のデータが共有ドライブにありません")
+    next
   }
+
+  open_dataset(in_files) %>%
+    filter(ssvid %in% vessel_rus$ssvid, fishing_hours > 0,
+           min_lon >= EXTRACT_BBOX[["xmin"]], max_lon <= EXTRACT_BBOX[["xmax"]],
+           min_lat >= EXTRACT_BBOX[["ymin"]], max_lat <= EXTRACT_BBOX[["ymax"]]) %>%
+    select(ssvid, date, first_timestamp, avg_lat_lon, fishing_hours, active_hours,
+           avg_depth_fishing_m, avg_distance_from_shore_fishing_m, avg_speed_knots) %>%
+    collect() %>%
+    mutate(avg_lon = as.numeric(str_match(avg_lat_lon, "POINT\\(([-0-9.]+) ")[, 2]),
+           avg_lat = as.numeric(str_match(avg_lat_lon, " ([-0-9.]+)\\)")[, 2])) %>%
+    select(-avg_lat_lon) %>%
+    write_parquet(out_file)
+  message(y, "年を抽出しました")
 }
 ```
 
@@ -251,52 +265,41 @@ save_plot(plot01_area)
 
 ## 分析範囲内のデータ抽出
 
-**目的**：ローカルのロシアトロール船データから、`area_nemuro` 内の記録を取り出し、船舶情報を結合する。日付はJSTに変換する。
-**出力**：`dat_nemuro`（キャッシュ：`data/processed/dat_nemuro.rds`）
+**目的**：ローカルのデータから `YEARS` の各年・`area_nemuro` 内の記録を取り出し、船舶情報を結合する。日付はJSTに変換する。
+**出力**：`dat_nemuro`
 
 ```{r dat-nemuro}
-cache_nemuro <- file.path(PROCESSED_DIR, "dat_nemuro.rds")
+dat_bbox <- open_dataset(file.path(DAILY_RUS_DIR, paste0("rus_trawlers_", YEARS, ".parquet"))) %>%
+  filter(between(avg_lon, AREA_NEMURO[["xmin"]], AREA_NEMURO[["xmax"]]),
+         between(avg_lat, AREA_NEMURO[["ymin"]], AREA_NEMURO[["ymax"]])) %>%
+  collect() %>%
+  distinct(ssvid, first_timestamp, .keep_all = TRUE)
 
-if (file.exists(cache_nemuro)) {
-  dat_nemuro <- readRDS(cache_nemuro)
-} else {
-  # 船舶リストは同じ ssvid×年 が複数行あるため、1行に絞ってから結合する（重複結合の防止）
-  vessel_master <- read_parquet(VESSEL_LIST_FILE) %>%
-    mutate(ssvid = as.character(ssvid)) %>%
-    distinct(ssvid, year, .keep_all = TRUE)
+# 陸地上に落ちた点（日平均位置の誤差）を除く
+in_area <- dat_bbox %>%
+  st_as_sf(coords = c("avg_lon", "avg_lat"), crs = 4326, remove = FALSE) %>%
+  st_intersects(area_nemuro, sparse = FALSE) %>%
+  as.vector()
+n_on_land <- sum(!in_area)
 
-  dat_bbox <- open_dataset(DAILY_RUS_DIR, format = "parquet") %>%
-    filter(between(avg_lon, AREA_NEMURO[["xmin"]], AREA_NEMURO[["xmax"]]),
-           between(avg_lat, AREA_NEMURO[["ymin"]], AREA_NEMURO[["ymax"]])) %>%
-    collect() %>%
-    mutate(ssvid = as.character(ssvid),
-           ts_jst = with_tz(first_timestamp, "Asia/Tokyo"),
-           year   = year(ts_jst)) %>%
-    distinct(ssvid, first_timestamp, .keep_all = TRUE)
+dat_nemuro <- dat_bbox[in_area, ] %>%
+  left_join(vessel_rus %>% select(-year), by = "ssvid") %>%
+  mutate(ts_jst = with_tz(first_timestamp, "Asia/Tokyo"),
+         date   = as.Date(ts_jst, tz = "Asia/Tokyo"),
+         year   = year(ts_jst),
+         month  = month(ts_jst),
+         season = factor(case_when(
+           month %in% 3:5  ~ "春 (3-5月)",
+           month %in% 6:8  ~ "夏 (6-8月)",
+           month %in% 9:11 ~ "秋 (9-11月)",
+           TRUE            ~ "冬 (12-2月)"),
+           levels = c("春 (3-5月)", "夏 (6-8月)", "秋 (9-11月)", "冬 (12-2月)"))) %>%
+  filter(year %in% YEARS)
 
-  # 陸地上に落ちた点（日平均位置の誤差）を除く
-  in_area <- dat_bbox %>%
-    st_as_sf(coords = c("avg_lon", "avg_lat"), crs = 4326, remove = FALSE) %>%
-    st_intersects(area_nemuro, sparse = FALSE) %>%
-    as.vector()
-  message("陸地上で除外した記録：", sum(!in_area), " / ", nrow(dat_bbox))
-
-  dat_nemuro <- dat_bbox[in_area, ] %>%
-    left_join(vessel_master, by = c("ssvid", "year")) %>%
-    filter(best_known_flag == "RUS", best_vessel_class %in% VESSEL_CLASS) %>%
-    mutate(date   = as.Date(ts_jst),
-           month  = month(ts_jst),
-           season = factor(case_when(
-             month %in% 3:5  ~ "春 (3-5月)",
-             month %in% 6:8  ~ "夏 (6-8月)",
-             month %in% 9:11 ~ "秋 (9-11月)",
-             TRUE            ~ "冬 (12-2月)"),
-             levels = c("春 (3-5月)", "夏 (6-8月)", "秋 (9-11月)", "冬 (12-2月)")))
-
-  stopifnot(nrow(dat_nemuro) == nrow(distinct(dat_nemuro, ssvid, first_timestamp)))
-  saveRDS(dat_nemuro, cache_nemuro)
-}
+stopifnot(nrow(dat_nemuro) == nrow(distinct(dat_nemuro, ssvid, first_timestamp)))
 ```
+
+陸地上で除外した記録：`r n_on_land` 件（全 `r nrow(dat_bbox)` 件中）
 
 # 記述統計
 

@@ -14,3 +14,8 @@
 - 図表は `plotNN_<内容>` / `tableNN_<内容>` と名付け、同じ名前で `output/fig`, `output/tables` に保存する（`save_plot()`, `save_table()`）
 - チャンクラベルも同じ名前（`plot01-area`）。見出しは `## plot01 分析範囲`
 - 見出し番号はQuartoの自動採番（`number-sections`）に任せ、手で振らない
+
+## データの追加・環境
+- 年を足すとき：`RussiaNemuro.qmd` の `YEARS` を変える（例：`2018:2026`）。ローカルに無い年だけ共有ドライブから抽出される
+- 抽出列を変えたとき：`data/processed/daily_russian_trawlers/` を消して再レンダリング
+- 読み込みは arrow のみ。Spark を使う場合は Java 11（`~/.Renviron` の `JAVA_HOME` = temurin-11）
