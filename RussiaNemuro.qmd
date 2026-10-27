@@ -811,3 +811,109 @@ save_plot(plot10_tonnage, width = 10, height = 6)
 ::: {.callout-tip title="結果メモ"}
 （記入）
 :::
+
+# 追加分析
+
+ミーティング（2026年10月）のコメントを受けた分析。計画：<https://claude.ai/artifact/76w8kth2MFEUjER9ed5PZ2>
+
+- **コメント1**：春・夏の増加は unusual。原因を探る（候補 A1〜A5）
+- **コメント2**：主要2隻と1,500トン級の船を細かく追跡する（B1〜B5）
+
+集計条件は「記述統計」と同じ（範囲② 海峡のみ、2018–2025年、JST）。
+
+## A5 見かけの増加ではないか（AISの受信状況）
+
+**問い**：2024・2025年の延べ隻日の増加は、AISの受信状況が良くなって記録が増えただけではないか。
+
+**確かめ方**：
+
+1. 1隻日あたりの位置の記録数（`positions`）と、そのうち衛星受信の割合が、年ごとに変わったかを見る（table04、plot11）
+2. 記録が少ない日（位置の記録が数個しかない日）を除いても、増加が残るかを見る（plot12）。受信状況が良くなっただけなら、増えた分は記録の少ない日に集中するはず
+
+**集計**：範囲② × 年 × 船×日。同じ船の同じ日に複数の記録（セグメント）がある場合は合計する。
+
+```{r vessel-day}
+# 船×日ごとに、位置の記録数・受信の内訳・漁獲時間を合計する
+vessel_day <- dat_nemuro %>%
+  group_by(year, month, season, date, ssvid, best_known_shipname, best_tonnage_gt) %>%
+  summarise(positions     = sum(positions, na.rm = TRUE),
+            sat_positions = sum(satellite_positions, na.rm = TRUE),
+            ter_positions = sum(terrestrial_positions, na.rm = TRUE),
+            fishing_hours = sum(fishing_hours, na.rm = TRUE),
+            .groups = "drop")
+```
+
+## table04 年別のAIS受信状況
+
+```{r table04-reception}
+table04_reception <- vessel_day %>%
+  group_by(year) %>%
+  summarise(vessel_days   = n(),
+            med_positions = median(positions),
+            sat_share     = sum(sat_positions) / sum(positions),
+            few_days      = mean(positions < 10),
+            .groups = "drop") %>%
+  gt() %>%
+  tab_header(title = "table04 根室海峡のロシアトロール船：年別のAIS受信状況",
+             subtitle = "範囲② 海峡のみ。1行＝1年、値は船×日ごとの集計") %>%
+  cols_label(year = "年", vessel_days = "延べ隻日",
+             med_positions = "1隻日あたりの位置記録数（中央値）",
+             sat_share = "衛星受信の割合", few_days = "記録が10未満の日の割合") %>%
+  fmt_number(columns = med_positions, decimals = 0) %>%
+  fmt_percent(columns = c(sat_share, few_days), decimals = 0)
+
+table04_reception
+save_table(table04_reception)
+```
+
+## plot11 1隻日あたりの位置記録数の分布
+
+**集計**：範囲② × 年 × 船×日。箱ひげ図の点は1隻日。縦軸は対数。
+
+```{r plot11-positions, fig.width=10, fig.height=5}
+plot11_positions <- ggplot(vessel_day, aes(factor(year), positions)) +
+  geom_boxplot(outlier.shape = NA, fill = "gray90") +
+  geom_jitter(width = 0.2, alpha = 0.3, size = 0.8, color = "steelblue") +
+  scale_y_log10() +
+  labs(title = "plot11 1隻日あたりのAIS位置記録数",
+       subtitle = "範囲② 海峡のみ。点は1隻日",
+       x = "年", y = "位置の記録数（対数軸）")
+
+plot11_positions
+save_plot(plot11_positions, width = 10, height = 5)
+```
+
+## plot12 記録の少ない日を除いた延べ隻日
+
+**集計**：範囲② × 年 × 季節（春・夏＝3–8月、秋・冬＝9–2月）。位置の記録数の下限（1以上＝全部、10以上、50以上）ごとに延べ隻日を数える。
+
+```{r plot12-robust-vd, fig.width=10, fig.height=5}
+robust_vd <- map_dfr(c(1, 10, 50), function(k) {
+  vessel_day %>%
+    filter(positions >= k) %>%
+    mutate(half = if_else(month %in% 3:8, "春・夏（3–8月）", "秋・冬（9–2月）")) %>%
+    count(year, half, name = "vessel_days") %>%
+    mutate(min_positions = paste0("記録数 ", k, " 以上"))
+}) %>%
+  mutate(min_positions = factor(min_positions, levels = paste0("記録数 ", c(1, 10, 50), " 以上")))
+
+plot12_robust_vd <- ggplot(robust_vd, aes(year, vessel_days, color = half)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~min_positions) +
+  scale_x_continuous(breaks = YEARS) +
+  scale_color_manual(values = c("春・夏（3–8月）" = "#d9534f", "秋・冬（9–2月）" = "#6c8ebf"), name = NULL) +
+  labs(title = "plot12 記録の少ない日を除いた延べ隻日",
+       subtitle = "範囲② 海峡のみ。右のパネルほど、受信のよい日だけを数えている",
+       x = "年", y = "延べ隻日") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top")
+
+plot12_robust_vd
+save_plot(plot12_robust_vd, width = 10, height = 5)
+```
+
+::: {.callout-tip title="結果メモ（A5）"}
+- **受信状況は2023年から大きく良くなった**：1隻日あたりの位置記録数の中央値は、2018–2022年の105–183から、2023–2025年は304–355へと約2〜3倍に増えた。受信はほぼすべて衛星（96–100%）。
+- **それでも、延べ隻日の増加は受信の改善では説明できない**：どの年も、記録が10未満の日は0%。記録が50以上の日だけを数えても、春・夏の延べ隻日は2024年44、2025年54で、増加はそのまま残る（plot12）。受信が良くなっただけなら、増えた分は記録の少ない日に集中するはずだが、そうなっていない。
+- **判定**：A5（見かけの増加）は、少なくとも主な説明ではない。残る注意点として、記録がまったくない日（0件）は数えられないので、2022年以前に「来ていたが1件も受信されなかった日」があった可能性は完全には否定できない。ただし、2022年以前も1隻日あたり100件前後の記録があったので、1日いれば受信されていた可能性が高い。
+:::
