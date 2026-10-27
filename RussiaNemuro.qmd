@@ -1501,7 +1501,13 @@ save_plot(plot19_sar_map, width = 10, height = 8)
 
 **目的**：SARの「AISなし」の検出には日本の船も含まれる。海上保安庁の**参考ライン**（北海道漁業調整規則にもとづく線。日本の漁船はこの線より東に入ると、ロシアに臨検・拿捕されるおそれがある）で海峡を分け、ロシア側の検出だけを数える。
 
-**出典**：根室海上保安部「根室海峡航行時の注意」（令和8年5月1日現在）<https://www.kaiho.mlit.go.jp/01kanku/nemuro/kaikyou/images/R8_chui.pdf>（`paper/sources.md` #16）。座標は世界測地系、度・分。
+**根拠**：
+
+- **北海道漁業調整規則 第33条・別表第3**（令和2年北海道規則第94号。令和7年北海道規則第48号による改正後も同じ）。第33条は「何人も、別表第3に掲げる区域においては、漁業を営んではならない」（許可・承認を受けた場合を除く）と定め、別表第3がその区域（歯舞群島・色丹島・国後島・択捉島の周辺水域）を22点の座標で示す。この22点を結んだ線が参考ラインにあたる（`paper/sources.md` #17）。
+- **根室海上保安部「根室海峡航行時の注意」**（令和8年5月1日現在）。同じ22点を「北海道漁業調整規則に基づく参考ライン」として示し、この線の東側に入るとロシア艦船に臨検・拿捕されるおそれがあると注意している（#16）。
+- 参考ラインは日本の国内法令上の区域の境界であり、国際的に合意された境界線ではない。
+
+座標は世界測地系。下のコードでは度・分（分は小数）で入力している（別表第3の度・分・秒と同じ値）。
 
 ```{r reference-line}
 # 参考ラインの22点（北から南へ）。度と分を度に直す
@@ -1601,4 +1607,86 @@ save_table(table11_sides)
 - **撮影1回あたりで見ると**：ロシア側には、衛星が通ったときに平均して約6隻（AISなし約5–6隻、ロシアのAISあり約0.5隻）の船が写っている。この数は2021年と2025年でほぼ同じ（480件/75枚、263件/41枚）。
 - **解釈**：ロシア側には、AISで見えている船の何倍もの船がいる。ただし、AISのない船がトロール船とは限らない（国後島の小型漁船、構造物、誤検出の可能性）。地元の数（239）がGFW（171）より多いのは自然だが、その差のうち何隻がトロール船かは、SARだけでは決められない。
 - **次に確かめること**：ロシア側のAISなしの検出から、同じ場所で繰り返し検出される点（構造物の可能性）を除く。SARの元データに船の長さの推定があれば、トロール船の大きさ（40–65 m）に絞る。
+:::
+
+
+## C6 動かない検出（構造物の可能性）を除く
+
+**問い**：SARの「AISなし」の検出には、船ではない動かないもの（浮標、養殖施設、岩礁、定置網など）が含まれているはず。それを除いても、ロシア側にAISのない船が多いと言えるか。
+
+**定義**（この分析で決めたもの）：0.01度（約1 km）の升目ごとに、検出された衛星画像の数を数える。**10枚以上の画像で、かつ4年以上にわたって検出されている升目**を「動かない検出」とみなし、その升目の検出をすべて除く。船は動くので、同じ升目で何年も繰り返し検出されることは少ない。
+
+**集計**：範囲② × 年 × 側。
+
+```{r static-cells}
+sar_cells <- sar_side %>%
+  mutate(cell_x = round(detect_lon / 0.01) * 0.01,
+         cell_y = round(detect_lat / 0.01) * 0.01)
+
+static_cells <- sar_cells %>%
+  group_by(cell_x, cell_y) %>%
+  summarise(n_scenes = n_distinct(scene_id), n_years = n_distinct(year), .groups = "drop") %>%
+  filter(n_scenes >= 10, n_years >= 4)
+
+sar_moving <- sar_cells %>%
+  anti_join(static_cells, by = c("cell_x", "cell_y"))
+```
+
+動かない検出とみなした升目：`r nrow(static_cells)` 個。除いた検出：`r nrow(sar_cells) - nrow(sar_moving)` 件（全 `r nrow(sar_cells)` 件中）
+
+## plot21 動かない検出の場所
+
+```{r plot21-static, fig.width=7, fig.height=8}
+plot21_static <- ggplot() +
+  geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_path(data = ref_dm, aes(lon, lat), color = "black", linewidth = 0.5) +
+  geom_point(data = sar_moving, aes(detect_lon, detect_lat), color = "gray60", size = 0.4, alpha = 0.4) +
+  geom_point(data = static_cells, aes(cell_x, cell_y, size = n_scenes), color = "#d9534f", alpha = 0.8) +
+  scale_size_area(max_size = 5, name = "検出された\n画像の数") +
+  coord_sf(xlim = c(145.0, 146.2), ylim = c(43.3, 44.6), expand = FALSE) +
+  scale_x_continuous(breaks = c(145.2, 145.6, 146.0)) +
+  labs(title = "plot21 動かない検出（構造物の可能性）",
+       subtitle = "赤：除いた升目（10枚以上・4年以上）\n灰色：残した検出、黒線：参考ライン",
+       x = "経度", y = "緯度")
+
+plot21_static
+save_plot(plot21_static, width = 7, height = 8)
+```
+
+## table12 動かない検出を除いたSAR検出（側別）
+
+```{r table12-sar-moving}
+# 年ごとの衛星画像の数：海峡のどこかで検出があった画像（動かない検出を除く前）で数える
+scenes_year <- sar_cells %>% group_by(year) %>% summarise(scenes = n_distinct(scene_id), .groups = "drop")
+
+table12_sar_moving <- sar_moving %>%
+  group_by(side, year) %>%
+  summarise(total      = n(),
+            n_rus_ais  = sum(rus_ais),
+            n_no_ais   = sum(!ais),
+            .groups = "drop") %>%
+  left_join(scenes_year, by = "year") %>%
+  mutate(no_ais_share     = n_no_ais / total,
+         no_ais_per_scene = n_no_ais / scenes,
+         rus_ais_per_scene = n_rus_ais / scenes) %>%
+  select(side, year, scenes, total, n_rus_ais, n_no_ais, no_ais_share, rus_ais_per_scene, no_ais_per_scene) %>%
+  arrange(desc(side), year) %>%
+  gt(groupname_col = "side") %>%
+  tab_header(title = "table12 動かない検出を除いたSAR検出：参考ラインの日本側・ロシア側",
+             subtitle = "範囲② 海峡のみ。衛星画像1枚あたりのAISなしの検出数も示す") %>%
+  cols_label(year = "年", scenes = "衛星画像の数", total = "検出", n_rus_ais = "ロシアのAIS",
+             n_no_ais = "AISなし", no_ais_share = "AISなしの割合",
+             rus_ais_per_scene = "画像1枚あたり ロシアのAIS", no_ais_per_scene = "画像1枚あたり AISなし") %>%
+  fmt_percent(columns = no_ais_share, decimals = 0) %>%
+  fmt_number(columns = c(rus_ais_per_scene, no_ais_per_scene), decimals = 1)
+
+table12_sar_moving
+save_table(table12_sar_moving)
+```
+
+::: {.callout-tip title="結果メモ（C6）"}
+- **検出の約半分が「動かない検出」だった**：100個の升目（約1 km四方）で、全期間7,803件のうち3,855件。これらはAISとほぼ一致しない（AISと一致した割合0–1%程度）。plot21 では、北海道沿岸（定置網などの可能性）と、海峡の中央〜国後島寄りに大きな集まりがある。
+- **除いたあとのロシア側**：AISなしの割合は59–89%に下がり、年とともに下がっている（2025年は59%）。衛星画像1枚あたりで見ると、ロシア側に写る船は2025年でロシアのAISあり0.5隻、AISなし0.8隻。
+- **解釈**：動かない検出を除くと、ロシア側でAISなしの船は、AISありの船の1.5倍程度（2025年）。C4・C5の「約9割がAISなし」は、構造物などを含んでいたため大きすぎた。GFWの数（C1' 171）と地元の数（239）の比（約1.4倍）は、この程度の「AISなしの船」がいることと矛盾しない。
+- **注意**：海峡の中央〜国後島寄りの「動かない検出」の集まり（北緯43.8–43.9度、東経145.3–145.4度付近と、北緯44.0度、東経145.4–145.45度付近）は、トロール船がよく操業する場所（plot14）と重なる。浅瀬や構造物なのか、AISを出さない船が同じ場所に繰り返しいるのかは、このデータだけでは区別できない。除く基準（10枚・4年）を変えたときに結論がどう変わるかも、今後確かめる。
 :::
