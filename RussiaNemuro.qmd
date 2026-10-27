@@ -917,3 +917,237 @@ save_plot(plot12_robust_vd, width = 10, height = 5)
 - **それでも、延べ隻日の増加は受信の改善では説明できない**：どの年も、記録が10未満の日は0%。記録が50以上の日だけを数えても、春・夏の延べ隻日は2024年44、2025年54で、増加はそのまま残る（plot12）。受信が良くなっただけなら、増えた分は記録の少ない日に集中するはずだが、そうなっていない。
 - **判定**：A5（見かけの増加）は、少なくとも主な説明ではない。残る注意点として、記録がまったくない日（0件）は数えられないので、2022年以前に「来ていたが1件も受信されなかった日」があった可能性は完全には否定できない。ただし、2022年以前も1隻日あたり100件前後の記録があったので、1日いれば受信されていた可能性が高い。
 :::
+
+## A1 船の入れ替わり
+
+**問い**：春・夏の増加は、新しく来た船によるものか、それとも前から来ていた同じ船が春・夏にも来るようになったのか。
+
+**集計**：範囲② × 年 × 船。春・夏（3–8月）の延べ隻日を船ごとに分ける。延べ隻日の多い5隻を名前で示し、それ以外は「その他」にまとめる。「初めて確認された年」は、範囲②で最初に記録された年。
+
+```{r a1-data}
+spring_summer <- vessel_day %>% filter(month %in% 3:8)
+
+top_ss <- spring_summer %>%
+  count(best_known_shipname, sort = TRUE) %>%
+  slice_head(n = 5) %>%
+  pull(best_known_shipname)
+
+first_year <- vessel_day %>%
+  group_by(ssvid) %>%
+  summarise(first_year = min(year), .groups = "drop")
+```
+
+## plot13 春・夏の延べ隻日の船別内訳
+
+```{r plot13-ss-vessels, fig.width=10, fig.height=5}
+ss_by_vessel <- spring_summer %>%
+  mutate(vessel = if_else(best_known_shipname %in% top_ss, best_known_shipname, "その他"),
+         vessel = factor(vessel, levels = c(top_ss, "その他"))) %>%
+  count(year, vessel, name = "vessel_days")
+
+plot13_ss_vessels <- ggplot(ss_by_vessel, aes(factor(year), vessel_days, fill = vessel)) +
+  geom_col() +
+  scale_fill_manual(values = c(setNames(c("#1f5a8a", "#e08a2e", "#5aa469", "#b3466b", "#8c6bb1"), top_ss),
+                               "その他" = "gray75"), name = "船名") +
+  labs(title = "plot13 春・夏（3–8月）の延べ隻日の船別内訳",
+       subtitle = "範囲② 海峡のみ。春・夏に延べ隻日の多い5隻を色分け",
+       x = "年", y = "延べ隻日")
+
+plot13_ss_vessels
+save_plot(plot13_ss_vessels, width = 10, height = 5)
+```
+
+## table05 新しい船か、前からいる船か
+
+**集計**：範囲② × 期間（2018–2023年、2024–2025年）× 季節。延べ隻日を「その期間より前から来ていた船」と「その期間に初めて来た船」に分ける。
+
+```{r table05-new-old}
+table05_new_old <- vessel_day %>%
+  left_join(first_year, by = "ssvid") %>%
+  filter(year >= 2024) %>%
+  mutate(half = if_else(month %in% 3:8, "春・夏（3–8月）", "秋・冬（9–2月）"),
+         origin = if_else(first_year < 2024, "2023年以前から来ていた船", "2024年以降に初めて来た船")) %>%
+  count(half, origin, name = "vessel_days") %>%
+  group_by(half) %>%
+  mutate(share = vessel_days / sum(vessel_days)) %>%
+  ungroup() %>%
+  gt(groupname_col = "half") %>%
+  tab_header(title = "table05 2024–2025年の延べ隻日：前からいる船か、新しい船か",
+             subtitle = "範囲② 海峡のみ。「初めて来た」は2018年以降の範囲②で最初に記録された年") %>%
+  cols_label(origin = "船の区分", vessel_days = "延べ隻日", share = "割合") %>%
+  fmt_percent(columns = share, decimals = 0)
+
+table05_new_old
+save_table(table05_new_old)
+```
+
+::: {.callout-tip title="結果メモ（A1）"}
+- **春・夏の増加は、前から来ていた船によるもの**：2024–2025年の春・夏の延べ隻日のうち **92%** は、2023年以前から海峡に来ていた船。2024年以降に初めて来た船は8%だけ（table05）。
+- **中心は ARCTIK**：春・夏の延べ隻日は2024年26、2025年28で、増加分の約半分。2025年は AVACHA（1,195 GT、14日）も加わった（plot13）。
+- **判定**：「新しい船が来た」（船の入れ替わり）ではなく、「同じ船が、冬以外の季節にも海峡に来るようになった」。次は、なぜ同じ船が季節を変えたのかを B2 と A2 で見る。
+:::
+
+## B1 主要な船の日ごとの航跡
+
+**対象の船**：延べ隻日の上位2隻（ARCTIK、TAIMANIA）と、1,500トン超で2024–2025年に来ている3隻（RUT、LEADER、GITTE）。
+
+**集計**：範囲② × 船 × 年。1日の平均位置を、時間の順に線でつなぐ。色は季節。点と点の間の線は「その順に移動した」ことを示すだけで、実際の航路ではない（日をまたいで記録がない場合も線はつながる）。
+
+```{r target-vessels}
+TARGET_VESSELS <- c("ARCTIK", "TAIMANIA", "RUT", "LEADER", "GITTE")
+
+target_ssvid <- dat_nemuro %>%
+  filter(best_known_shipname %in% TARGET_VESSELS) %>%
+  distinct(ssvid, best_known_shipname, best_tonnage_gt)
+
+target_ssvid %>%
+  arrange(match(best_known_shipname, TARGET_VESSELS)) %>%
+  gt() %>%
+  tab_header(title = "追跡する船") %>%
+  cols_label(ssvid = "MMSI (ssvid)", best_known_shipname = "船名", best_tonnage_gt = "総トン数") %>%
+  fmt_number(columns = best_tonnage_gt, decimals = 0)
+
+season_colors <- c("春 (3-5月)" = "#5aa469", "夏 (6-8月)" = "#d9534f",
+                   "秋 (9-11月)" = "#e0a85c", "冬 (12-2月)" = "#6c8ebf")
+
+# 航跡図：1日の平均位置を時間順につなぐ（範囲②の線と陸地を背景に）
+plot_track <- function(dat, title, facet) {
+  ggplot() +
+    geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+    geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
+    geom_path(data = dat, aes(avg_lon, avg_lat, group = interaction(ssvid, year)),
+              color = "gray40", linewidth = 0.3, alpha = 0.6) +
+    geom_point(data = dat, aes(avg_lon, avg_lat, color = season), size = 1.4) +
+    scale_color_manual(values = season_colors, name = "季節", drop = FALSE) +
+    coord_sf(xlim = c(145.0, 146.2), ylim = c(43.3, 44.55), expand = FALSE) +
+    scale_x_continuous(breaks = c(145.2, 145.8)) +
+    facet_wrap(facet, ncol = 4) +
+    labs(title = title, x = "経度", y = "緯度")
+}
+```
+
+## plot14 ARCTIK の航跡（年別）
+
+```{r plot14-track-arctik, fig.width=12, fig.height=8}
+plot14_track_arctik <- dat_nemuro %>%
+  filter(best_known_shipname == "ARCTIK") %>%
+  arrange(first_timestamp) %>%
+  plot_track("plot14 ARCTIK（538 GT）の日ごとの位置", ~year) +
+  labs(subtitle = "範囲② 海峡のみ（破線）。点は1日の平均位置、線は時間順のつながり")
+
+plot14_track_arctik
+save_plot(plot14_track_arctik, width = 12, height = 8)
+```
+
+## plot15 TAIMANIA の航跡（年別）
+
+```{r plot15-track-taimania, fig.width=12, fig.height=8}
+plot15_track_taimania <- dat_nemuro %>%
+  filter(best_known_shipname == "TAIMANIA") %>%
+  arrange(first_timestamp) %>%
+  plot_track("plot15 TAIMANIA（737 GT）の日ごとの位置", ~year) +
+  labs(subtitle = "範囲② 海峡のみ（破線）。点は1日の平均位置、線は時間順のつながり")
+
+plot15_track_taimania
+save_plot(plot15_track_taimania, width = 12, height = 8)
+```
+
+## plot16 1,500トン超の3隻の航跡
+
+```{r plot16-track-large, fig.width=12, fig.height=5}
+plot16_track_large <- dat_nemuro %>%
+  filter(best_known_shipname %in% c("RUT", "LEADER", "GITTE")) %>%
+  arrange(first_timestamp) %>%
+  mutate(label = paste0(best_known_shipname, "（", round(best_tonnage_gt), " GT）")) %>%
+  plot_track("plot16 1,500トン超の3隻の日ごとの位置", ~label) +
+  labs(subtitle = "範囲② 海峡のみ（破線）、全期間。点は1日の平均位置")
+
+plot16_track_large
+save_plot(plot16_track_large, width = 12, height = 5)
+```
+
+::: {.callout-tip title="結果メモ（B1）"}
+- **ARCTIK**（plot14）：2018–2023年はほぼ秋・冬だけ。2024年は夏（赤）の点が国後島の西岸沿いに北東へ帯状に並び、2025年も夏・春の点が出てくる。どの年も、北海道側の沿岸には近づいていない。
+- **TAIMANIA**（plot15）：毎年秋・冬が中心で、国後島寄りの海域を使う。
+- **1,500トン超の3隻**（plot16）：海峡内の点は少なく（各2–9日）、国後島寄り。
+- 注意：点は1日の平均位置なので、1日の中で北海道側に寄った動きは見えない。B3（日単位のAISの空白、1日の最小・最大経度）で補う。
+:::
+
+## B2 海峡の外ではどこにいるか
+
+**問い**：追跡する5隻は、根室海峡にいないときはどこで操業しているか。海峡に来るのは、どの海域から来たときか。
+
+**範囲**：ローカルに抽出した広い範囲（`EXTRACT_BBOX`：北緯41.5–50度、東経139–160度。下の地図の範囲）。この範囲の外の操業は見えない。
+
+**集計**：船 × 年 × 範囲②の内外。延べ隻日を数える。
+
+```{r b2-data}
+# 抽出した広い範囲の全記録から、追跡する5隻だけを取り出す
+dat_target_all <- open_dataset(file.path(DAILY_RUS_DIR, paste0("rus_trawlers_", YEARS, ".parquet"))) %>%
+  filter(ssvid %in% target_ssvid$ssvid) %>%
+  collect() %>%
+  distinct(ssvid, first_timestamp, .keep_all = TRUE) %>%
+  left_join(target_ssvid, by = "ssvid") %>%
+  mutate(ts_jst = with_tz(first_timestamp, "Asia/Tokyo"),
+         date   = as.Date(ts_jst, tz = "Asia/Tokyo"),
+         year   = year(ts_jst),
+         month  = month(ts_jst)) %>%
+  filter(year %in% YEARS)
+
+dat_target_all <- dat_target_all %>%
+  mutate(in_strait = st_intersects(st_as_sf(dat_target_all, coords = c("avg_lon", "avg_lat"), crs = 4326),
+                                   st_union(area_strait), sparse = FALSE)[, 1])
+
+land_extract <- ne_countries(country = c("japan", "russia"), scale = "medium", returnclass = "sf") %>%
+  st_union() %>%
+  st_crop(EXTRACT_BBOX)
+```
+
+## plot17 5隻の操業位置（抽出した範囲全体）
+
+```{r plot17-target-region, fig.width=12, fig.height=8}
+plot17_target_region <- ggplot() +
+  geom_sf(data = land_extract, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_strait, fill = NA, color = "steelblue") +
+  geom_point(data = dat_target_all, aes(avg_lon, avg_lat, color = in_strait), size = 0.6, alpha = 0.5) +
+  scale_color_manual(values = c(`TRUE` = "#d9534f", `FALSE` = "gray30"),
+                     labels = c(`TRUE` = "根室海峡の中", `FALSE` = "海峡の外"), name = NULL) +
+  coord_sf(xlim = EXTRACT_BBOX[c("xmin", "xmax")], ylim = EXTRACT_BBOX[c("ymin", "ymax")], expand = FALSE) +
+  facet_wrap(~best_known_shipname, ncol = 3) +
+  labs(title = "plot17 追跡する5隻の操業位置（2018–2025年）",
+       subtitle = "抽出した範囲全体（北緯41.5–50度、東経139–160度）。点は1日の平均位置。青線は範囲②",
+       x = "経度", y = "緯度") +
+  theme(legend.position = "top")
+
+plot17_target_region
+save_plot(plot17_target_region, width = 12, height = 8)
+```
+
+## table06 5隻の延べ隻日：海峡の中と外
+
+```{r table06-in-out}
+table06_in_out <- dat_target_all %>%
+  distinct(best_known_shipname, year, date, in_strait) %>%
+  group_by(best_known_shipname, year) %>%
+  summarise(n_in  = n_distinct(date[in_strait]),  # 列名 in_strait を上書きしないよう別名にする
+            n_out = n_distinct(date[!in_strait]),
+            .groups = "drop") %>%
+  mutate(share_in = n_in / (n_in + n_out),
+         best_known_shipname = factor(best_known_shipname, levels = TARGET_VESSELS)) %>%
+  arrange(best_known_shipname, year) %>%
+  gt(groupname_col = "best_known_shipname") %>%
+  tab_header(title = "table06 追跡する5隻の延べ隻日：根室海峡の中と外",
+             subtitle = "抽出した範囲全体。同じ日に海峡の中と外の両方で記録がある場合は、両方に数える") %>%
+  cols_label(year = "年", n_in = "海峡の中", n_out = "海峡の外", share_in = "海峡の中の割合") %>%
+  fmt_percent(columns = share_in, decimals = 0)
+
+table06_in_out
+save_table(table06_in_out)
+```
+
+::: {.callout-tip title="結果メモ（B2）"}
+- **主要2隻も、ふだんは海峡の外にいる**：ARCTIK・TAIMANIA は、延べ隻日の大半を国後島の南〜東の太平洋側（北方四島周辺から千島列島沿い）で過ごしている（plot17）。
+- **海峡にいる割合が上がった**：ARCTIK は2018–2023年の8–16% から、2024年24%、2025年26%へ。年間の延べ隻日（海峡の内外の合計）は大きく増えていないので、**外で操業していた日の一部を海峡に移した**ことになる（table06）。TAIMANIA も同じ傾向（2018–2023年 5–14% → 2024–2025年 19–24%）。
+- **1,500トン超の3隻は、海峡は「たまに寄るだけ」**：海峡にいる割合は0–5%。ふだんは千島列島沿いやオホーツク海（サハリン沖など）で操業している。
+- **次の問い（A2・A3 へ）**：なぜ2024年から、主要2隻は外での操業の一部を海峡（特に春・夏）に移したのか。海峡の外の漁場の状況、魚種、2023年の協定停止との関係を見る。
+:::
