@@ -154,7 +154,7 @@ VESSEL_CLASS <- "trawlers"
 EXTRACT_BBOX <- c(xmin = 139.0, xmax = 160.0, ymin = 41.5, ymax = 50.0)
 
 # 分析範囲①：根室海峡周辺（広域）の経度・緯度。海峡のみの範囲②は 2.3 で作る
-AREA_NEMURO <- c(xmin = 144.8, xmax = 146.0, ymin = 43.2, ymax = 44.5)
+AREA_NEMURO <- c(xmin = 144.8, xmax = 146.3, ymin = 43.15, ymax = 44.7)
 ```
 
 ## 保存用の関数
@@ -229,9 +229,19 @@ for (y in YEARS) {
 分析範囲は2つある。**すべての集計は範囲②（海峡のみ）で行う**。範囲①は、範囲②を作るための外枠と、新聞の報告値との比較（table02）にだけ使う。
 
 - **範囲① 広域**（`area_wide`）：`AREA_NEMURO` の四角から陸地を除いた海域。国後島の東側・南側の海も含む。
-- **範囲② 海峡のみ**（`area_strait`）：知床半島・野付半島・根室半島と国後島に挟まれた海域。
-  - 東の境界：国後島の中心線。その南端から真南に延ばして根室半島に当てる
-  - 北の境界：北緯44.33度（知床岬付近）。知床半島の西側（オホーツク海側）は含めない
+- **範囲② 海峡のみ**（`area_strait`）：海上保安庁による根室海峡の定義に合わせる（`paper/sources.md` #14）。
+  - 南口：根室半島の納沙布岬と、国後島の南端ケラムイ埼を結ぶ線
+  - 北口：知床岬と、その東北東にある国後島のルルイ岬を結ぶ線
+  - 東側は国後島（島の中心線より西の海だけを使い、島の東側の海は含めない）
+
+岬の位置は次のように決める。ルルイ岬は正確な座標が見つからなかったので、近くのルルイ岳の位置から求めた近似である。
+
+| 岬 | 決め方 |
+|---|---|
+| 知床岬 | 地図データ（Natural Earth）の北海道の陸地のうち、最も北の点 |
+| ケラムイ埼 | 国後島の陸地のうち、最も南の点 |
+| ルルイ岬 | ルルイ岳の山頂（気象庁の火山データ）に最も近い国後島の海岸の点。知床岬から見てほぼ東北東（方位約77度） |
+| 納沙布岬 | 既知の座標（北緯43.385度、東経145.817度） |
 
 ```{r areas}
 land_sf <- ne_countries(country = c("japan", "russia"), scale = "large", returnclass = "sf") %>%
@@ -243,15 +253,31 @@ area_wide <- st_as_sfc(st_bbox(AREA_NEMURO, crs = 4326)) %>%
   st_difference(land_sf)
 
 # 範囲② 海峡のみ
-# (1) 国後島の中心線：緯度0.02度ごとに、島の東西の端の中点をとる
+japan_land <- ne_countries(country = "japan", scale = "large", returnclass = "sf") %>%
+  st_union() %>%
+  st_crop(AREA_NEMURO)
 kunashiri <- ne_countries(country = "russia", scale = "large", returnclass = "sf") %>%
   st_union() %>%
   st_crop(AREA_NEMURO) %>%
   st_cast("POLYGON")
-kunashiri <- kunashiri[which.max(st_area(kunashiri))]
+kunashiri <- kunashiri[which.max(st_area(kunashiri))] # 範囲内で一番大きいロシア側の島＝国後島
 
-STRAIT_NORTH <- 44.33
-kuna_lats <- seq(43.66, STRAIT_NORTH, by = 0.02)
+# (1) 4つの岬の位置
+jp_xy <- st_coordinates(japan_land)
+ku_xy <- st_coordinates(kunashiri)
+cape_shiretoko <- jp_xy[which.max(jp_xy[, "Y"]), c("X", "Y")]
+cape_keramui   <- ku_xy[which.min(ku_xy[, "Y"]), c("X", "Y")]
+cape_nosappu   <- c(X = 145.817, Y = 43.385)
+
+# ルルイ岬：ルルイ岳の山頂（気象庁：北緯44°27'15"、東経146°08'24"）に最も近い国後島の海岸の点
+peak_ruruy <- st_sfc(st_point(c(146 + 8.4 / 60, 44 + 27.25 / 60)), crs = 4326)
+cape_ruruy <- st_nearest_points(peak_ruruy, st_boundary(kunashiri)) %>%
+  st_cast("POINT") %>%
+  st_coordinates()
+cape_ruruy <- cape_ruruy[2, c("X", "Y")]
+
+# (2) 国後島の中心線：ルルイ岬からケラムイ埼までの緯度で、0.02度ごとに島の東西の端の中点をとる
+kuna_lats <- seq(cape_keramui[["Y"]] + 0.01, cape_ruruy[["Y"]], by = 0.02)
 kuna_mid  <- map_dbl(kuna_lats, function(y) {
   line <- st_sfc(st_linestring(rbind(c(AREA_NEMURO[["xmin"]], y), c(AREA_NEMURO[["xmax"]], y))), crs = 4326)
   x <- st_intersection(line, kunashiri)
@@ -259,22 +285,36 @@ kuna_mid  <- map_dbl(kuna_lats, function(y) {
 })
 axis <- tibble(lon = kuna_mid, lat = kuna_lats) %>% filter(!is.na(lon)) %>% arrange(desc(lat))
 
-# (2) 西端・北の境界・国後島の中心線・南への延長で囲み、陸地を除く
+# (3) 北口 → 国後島の中心線 → 南口 → 北海道の陸の上を通って知床岬に戻る線で囲み、陸地を除く
+#     陸の上の点は陸地を除くときに消えるので、北海道の内陸ならどこを通ってもよい
+inland_hokkaido <- rbind(c(145.50, 43.20), c(145.00, 43.20), c(144.85, 43.85),
+                         c(145.08, 44.05), c(145.20, 44.20))
 strait_outline <- rbind(
-  c(AREA_NEMURO[["xmin"]], AREA_NEMURO[["ymin"]]),
-  c(AREA_NEMURO[["xmin"]], STRAIT_NORTH),
+  cape_shiretoko,
+  cape_ruruy,
   cbind(axis$lon, axis$lat),
-  c(last(axis$lon), AREA_NEMURO[["ymin"]]),
-  c(AREA_NEMURO[["xmin"]], AREA_NEMURO[["ymin"]])
+  cape_keramui,
+  cape_nosappu,
+  inland_hokkaido,
+  cape_shiretoko
 )
-strait_pieces <- st_sfc(st_polygon(list(strait_outline)), crs = 4326) %>%
+strait_pieces <- st_sfc(st_polygon(list(unname(strait_outline))), crs = 4326) %>%
+  st_make_valid() %>%
   st_difference(land_sf) %>%
   st_cast("POLYGON")
 
-# (3) 海峡の中央（145.4°E, 43.9°N）を含む海域だけを残す（知床半島の西側を落とす）
+# (4) 海峡の中央（145.4°E, 43.9°N）を含む海域だけを残す
 center <- st_sfc(st_point(c(145.4, 43.9)), crs = 4326)
 area_strait <- strait_pieces[st_intersects(strait_pieces, center, sparse = FALSE)[, 1]]
 
+capes <- tibble(name = c("知床岬", "ルルイ岬", "ケラムイ埼", "納沙布岬"),
+                lon  = c(cape_shiretoko[["X"]], cape_ruruy[["X"]], cape_keramui[["X"]], cape_nosappu[["X"]]),
+                lat  = c(cape_shiretoko[["Y"]], cape_ruruy[["Y"]], cape_keramui[["Y"]], cape_nosappu[["Y"]]))
+```
+
+岬の位置：`r paste(sprintf("%s（%.3f°N, %.3f°E）", capes$name, capes$lat, capes$lon), collapse = "、")`
+
+```{r places}
 # 地図ラベル（位置はおおよそ）
 places <- tribble(
   ~name,    ~lon,   ~lat,
@@ -295,6 +335,7 @@ plot01_area_wide <- ggplot() +
   geom_sf(data = area_wide, fill = "gray50", alpha = 0.2, color = "gray40") +
   geom_text(data = places, aes(lon, lat, label = name), size = 3.5) +
   coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  scale_x_continuous(breaks = c(145.0, 145.5, 146.0)) +
   labs(title = "plot01 分析範囲①：根室海峡周辺（広域）",
        subtitle = sprintf("経度 %.1f–%.1f°E、緯度 %.1f–%.1f°N（陸地を除く）",
                           AREA_NEMURO["xmin"], AREA_NEMURO["xmax"], AREA_NEMURO["ymin"], AREA_NEMURO["ymax"]),
@@ -310,11 +351,17 @@ save_plot(plot01_area_wide)
 plot02_area_strait <- ggplot() +
   geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
   geom_sf(data = area_strait, fill = "steelblue", alpha = 0.3, color = "steelblue") +
-  geom_path(data = axis, aes(lon, lat), linetype = "dashed", color = "steelblue") +
+  geom_segment(aes(x = cape_shiretoko[["X"]], y = cape_shiretoko[["Y"]], xend = cape_ruruy[["X"]], yend = cape_ruruy[["Y"]]),
+               linetype = "dashed", color = "steelblue") +
+  geom_segment(aes(x = cape_keramui[["X"]], y = cape_keramui[["Y"]], xend = cape_nosappu[["X"]], yend = cape_nosappu[["Y"]]),
+               linetype = "dashed", color = "steelblue") +
+  geom_point(data = capes, aes(lon, lat), color = "steelblue", size = 2) +
+  geom_text(data = capes, aes(lon, lat, label = name), size = 3, color = "steelblue", nudge_y = 0.04) +
   geom_text(data = places, aes(lon, lat, label = name), size = 3.5) +
   coord_sf(xlim = AREA_NEMURO[c("xmin", "xmax")], ylim = AREA_NEMURO[c("ymin", "ymax")], expand = FALSE) +
+  scale_x_continuous(breaks = c(145.0, 145.5, 146.0)) +
   labs(title = "plot02 分析範囲②：根室海峡（海峡のみ）",
-       subtitle = sprintf("東端：国後島の中心線（破線）、北端：北緯%.2f度", STRAIT_NORTH),
+       subtitle = "北口：知床岬–ルルイ岬、南口：ケラムイ埼–納沙布岬（破線）",
        x = "経度", y = "緯度")
 
 plot02_area_strait
