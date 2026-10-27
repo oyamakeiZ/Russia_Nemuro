@@ -180,6 +180,7 @@ save_table <- function(tb) {
 
 **目的**：共有ドライブから、ロシア船籍トロール船の記録だけをローカルに切り出す。
 **仕組み**：年ごとにファイルを作り、**ローカルに無い年だけ**抽出する。`YEARS` に2026を足せば2026年だけが追加で抽出される。
+**列**：位置（1日の平均・最小・最大の緯度経度）、時刻（最初・最後）、漁獲時間、AISの受信状況（位置の記録数、衛星受信・陸上受信の数）、水深、岸からの距離、速度。
 **出力**：`data/processed/vessel_rus_trawlers.parquet`（船舶情報）、`data/processed/daily_russian_trawlers/rus_trawlers_<年>.parquet`
 
 ```{r extract-russian-trawlers}
@@ -213,7 +214,10 @@ for (y in YEARS) {
     filter(ssvid %in% vessel_rus$ssvid, fishing_hours > 0,
            min_lon >= EXTRACT_BBOX[["xmin"]], max_lon <= EXTRACT_BBOX[["xmax"]],
            min_lat >= EXTRACT_BBOX[["ymin"]], max_lat <= EXTRACT_BBOX[["ymax"]]) %>%
-    select(ssvid, date, first_timestamp, avg_lat_lon, fishing_hours, active_hours,
+    select(ssvid, seg_id, date, first_timestamp, last_timestamp, avg_lat_lon,
+           min_lat, max_lat, min_lon, max_lon,
+           hours, fishing_hours, active_hours,
+           positions, satellite_positions, terrestrial_positions,
            avg_depth_fishing_m, avg_distance_from_shore_fishing_m, avg_speed_knots) %>%
     collect() %>%
     mutate(avg_lon = as.numeric(str_match(avg_lat_lon, "POINT\\(([-0-9.]+) ")[, 2]),
