@@ -1496,3 +1496,109 @@ save_plot(plot19_sar_map, width = 10, height = 8)
 - **SARは毎日の観測ではない**：衛星画像は年39–75枚（数日に1回）。また2022年以降は画像の数が減っている（2021年75枚 → 2023–2025年39–42枚）ので、年ごとの検出数をそのまま比べることはできない。
 - **次に確かめること**：(1) 海上保安庁の参考ライン（日ロの境界として使われている線）で、日本側・ロシア側に分けて数える。(2) 同じ場所で繰り返し検出される点（構造物の可能性）を除く。(3) 検出された船の大きさ（長さ）がわかれば、トロール船の大きさ（40–65 m）に当たるものに絞る。
 :::
+
+## C5 参考ラインで日本側・ロシア側に分ける
+
+**目的**：SARの「AISなし」の検出には日本の船も含まれる。海上保安庁の**参考ライン**（北海道漁業調整規則にもとづく線。日本の漁船はこの線より東に入ると、ロシアに臨検・拿捕されるおそれがある）で海峡を分け、ロシア側の検出だけを数える。
+
+**出典**：根室海上保安部「根室海峡航行時の注意」（令和8年5月1日現在）<https://www.kaiho.mlit.go.jp/01kanku/nemuro/kaikyou/images/R8_chui.pdf>（`paper/sources.md` #16）。座標は世界測地系、度・分。
+
+```{r reference-line}
+# 参考ラインの22点（北から南へ）。度と分を度に直す
+ref_dm <- tribble(
+  ~pt, ~lat_d, ~lat_m, ~lon_d, ~lon_m,
+   1, 44, 33.15, 145, 37.75,   2, 44, 20.15, 145, 36.75,
+   3, 44, 17.65, 145, 36.75,   4, 44, 09.15, 145, 31.75,
+   5, 43, 57.15, 145, 19.25,   6, 43, 55.15, 145, 16.75,
+   7, 43, 52.15, 145, 14.75,   8, 43, 48.15, 145, 13.75,
+   9, 43, 44.15, 145, 15.25,  10, 43, 41.65, 145, 18.25,
+  11, 43, 38.65, 145, 23.25,  12, 43, 37.65, 145, 25.75,
+  13, 43, 30.15, 145, 31.75,  14, 43, 32.15, 145, 40.75,
+  15, 43, 26.15, 145, 47.75,  16, 43, 25.15, 145, 49.25,
+  17, 43, 23.45, 145, 50.25,  18, 43, 20.15, 145, 51.75,
+  19, 43, 19.15, 145, 52.25,  20, 43, 16.15, 145, 52.25,
+  21, 43, 14.15, 145, 53.25,  22, 43, 08.15, 145, 53.25
+) %>%
+  mutate(lat = lat_d + lat_m / 60, lon = lon_d + lon_m / 60)
+
+# ロシア側：参考ラインの東側（ラインと東の外枠で囲み、範囲②と重ねる）
+east_edge <- 147
+russia_side_poly <- st_sfc(st_polygon(list(rbind(
+  cbind(ref_dm$lon, ref_dm$lat),
+  c(east_edge, last(ref_dm$lat)),
+  c(east_edge, first(ref_dm$lat)),
+  c(first(ref_dm$lon), first(ref_dm$lat))
+))), crs = 4326)
+
+area_russia_side <- st_intersection(st_union(area_strait), russia_side_poly)
+area_japan_side  <- st_difference(st_union(area_strait), russia_side_poly)
+```
+
+面積：日本側 `r round(as.numeric(st_area(st_transform(area_japan_side, 32655))) / 1e6)` km²、ロシア側 `r round(as.numeric(st_area(st_transform(area_russia_side, 32655))) / 1e6)` km²
+
+## plot20 参考ラインで分けた範囲
+
+```{r plot20-sides, fig.width=7, fig.height=8}
+plot20_sides <- ggplot() +
+  geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_japan_side, fill = "#e0a85c", alpha = 0.35, color = NA) +
+  geom_sf(data = area_russia_side, fill = "#1f5a8a", alpha = 0.25, color = NA) +
+  geom_path(data = ref_dm, aes(lon, lat), color = "black", linewidth = 0.6) +
+  geom_text(data = places, aes(lon, lat, label = name), size = 3.5) +
+  annotate("text", x = 145.12, y = 43.95, label = "日本側", color = "#9a5a10", size = 4, fontface = "bold") +
+  annotate("text", x = 145.82, y = 44.3, label = "ロシア側", color = "#1f5a8a", size = 4, fontface = "bold") +
+  coord_sf(xlim = c(145.0, 146.2), ylim = c(43.3, 44.6), expand = FALSE) +
+  scale_x_continuous(breaks = c(145.2, 145.6, 146.0)) +
+  labs(title = "plot20 参考ラインで分けた根室海峡",
+       subtitle = "黒線：海上保安庁の参考ライン（22点）。範囲②を日本側・ロシア側に分ける",
+       x = "経度", y = "緯度")
+
+plot20_sides
+save_plot(plot20_sides, width = 7, height = 8)
+```
+
+## table11 日本側・ロシア側別のSAR検出とGFWのロシア船
+
+**集計**：範囲② × 年 × 側。SAR検出（AISあり・なし）と、GFWのロシアのトロール船（C1'：登録上のトロール船を含む、海峡にいた日）が、どちらの側にいたか。
+
+```{r table11-sides}
+side_of <- function(sf_pts) {
+  if_else(st_intersects(sf_pts, area_russia_side, sparse = FALSE)[, 1], "ロシア側", "日本側")
+}
+
+sar_side <- sar %>%
+  mutate(side = side_of(st_as_sf(sar, coords = c("detect_lon", "detect_lat"), crs = 4326)))
+
+gfw_rus_trawl <- dat_all %>% filter(trawler | reg_trawl)
+gfw_rus_trawl <- gfw_rus_trawl %>%
+  mutate(side = side_of(st_as_sf(gfw_rus_trawl, coords = c("avg_lon", "avg_lat"), crs = 4326)))
+
+table11_sides <- sar_side %>%
+  group_by(year, side) %>%
+  summarise(sar_total = n(), sar_no_ais = sum(!ais), sar_rus_ais = sum(rus_ais), .groups = "drop") %>%
+  mutate(no_ais_share = sar_no_ais / sar_total) %>%
+  left_join(gfw_rus_trawl %>% group_by(year, side) %>%
+              summarise(gfw_rus_vd = n_distinct(ssvid, date), .groups = "drop"),
+            by = c("year", "side")) %>%
+  mutate(gfw_rus_vd = coalesce(gfw_rus_vd, 0L)) %>%
+  select(side, year, sar_total, sar_rus_ais, sar_no_ais, no_ais_share, gfw_rus_vd) %>%
+  arrange(desc(side), year) %>%
+  gt(groupname_col = "side") %>%
+  tab_header(title = "table11 参考ラインの日本側・ロシア側別：SAR検出とGFWのロシアのトロール船",
+             subtitle = "範囲② 海峡のみ。SARは衛星画像の撮影時の検出数。GFWは延べ隻日（C1'）") %>%
+  tab_spanner("SAR検出", columns = c(sar_total, sar_rus_ais, sar_no_ais, no_ais_share)) %>%
+  cols_label(year = "年", sar_total = "検出", sar_rus_ais = "ロシアのAIS", sar_no_ais = "AISなし",
+             no_ais_share = "AISなしの割合", gfw_rus_vd = "GFW ロシアのトロール船（延べ隻日）") %>%
+  fmt_percent(columns = no_ais_share, decimals = 0)
+
+table11_sides
+save_table(table11_sides)
+```
+
+::: {.callout-tip title="結果メモ（C5）"}
+- **GFWのロシアのトロール船は、参考ラインを越えて日本側に来ていない**：延べ隻日のうち日本側は、どの年も0–2日だけ（2025年はロシア側170日、日本側1日）。これまでの「北海道の海岸から12 km以内に来ていない」は、**参考ラインのすぐ手前まで来ているが、越えていない**ことを表していた（参考ラインは北海道の海岸から10数km沖を通る）。
+- **ロシア側でも、SAR検出の約9割はAISと対応しない**：2025年はロシア側の検出263件のうち、AISなし238件（90%）、ロシアのAISと一致したのは25件。どの年も90–95%。日本の漁船はふつう参考ラインを越えないので、ロシア側のAISなしの検出には、日本の船はほとんど含まれないと考えられる。
+- **撮影1回あたりで見ると**：ロシア側には、衛星が通ったときに平均して約6隻（AISなし約5–6隻、ロシアのAISあり約0.5隻）の船が写っている。この数は2021年と2025年でほぼ同じ（480件/75枚、263件/41枚）。
+- **解釈**：ロシア側には、AISで見えている船の何倍もの船がいる。ただし、AISのない船がトロール船とは限らない（国後島の小型漁船、構造物、誤検出の可能性）。地元の数（239）がGFW（171）より多いのは自然だが、その差のうち何隻がトロール船かは、SARだけでは決められない。
+- **次に確かめること**：ロシア側のAISなしの検出から、同じ場所で繰り返し検出される点（構造物の可能性）を除く。SARの元データに船の長さの推定があれば、トロール船の大きさ（40–65 m）に絞る。
+:::
