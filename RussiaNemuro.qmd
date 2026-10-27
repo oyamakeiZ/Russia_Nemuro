@@ -1387,3 +1387,112 @@ save_table(table09_toron_season)
 - **場所はトロール船と同じ**：国後島寄りの海域から海峡の中央にかけて操業し、北海道の海岸から12 km より近くには来ていない（最短12.5–15.4 km。トロール船は12.1–15.4 km）。
 - **意味**：GFWの推定では「まき網」だが、登録上はトロール船で、2025年の増加にも加わっている。地元が「トロール船」として数えている船に含まれる可能性が高い。C1' で2025年の延べ隻日が171日になったうちの49日がこの2隻。
 :::
+
+## C4 SAR（衛星レーダー）で見えるAISのない船
+
+**問い**：海峡には、AISを出していない船がどれくらいいるか。その割合で、地元の数（239）とGFWの数（C1' 171）の差を説明できるか。
+
+**データ**：GFWのSAR船舶検出（Sentinel-1。共有ドライブ `sar_optical/gfw_pipe_sar_v1_published_v4.parquet`）。衛星が通った時刻の「スナップショット」なので、毎日の観測ではない。1つの検出に、AISの候補船が複数行つく。
+
+**定義**（この分析で決めたもの）：
+
+- **AISあり**：候補船のうち、対応づけの確からしさ（`confidence`）が 0.5 以上のものがある検出
+- **AISなし**：そのような候補船がない検出。日本の小型漁船（AISを積んでいない）、養殖施設などの構造物、誤検出も含まれる
+- 北海道側の沿岸の検出には日本の船が多く含まれるはずなので、**北海道の海岸から12 km以上**（ロシアのトロール船が操業する範囲）に絞った値も出す
+
+**集計**：範囲② × 年。
+
+```{r sar-data}
+sar_file <- file.path(PROCESSED_DIR, "sar_nemuro.parquet")
+if (!file.exists(sar_file)) {
+  open_dataset(file.path(GAKULAB_DATA, "original", "gfw", "sar_optical", "gfw_pipe_sar_v1_published_v4.parquet")) %>%
+    filter(detect_lon >= AREA_NEMURO[["xmin"]], detect_lon <= AREA_NEMURO[["xmax"]],
+           detect_lat >= AREA_NEMURO[["ymin"]], detect_lat <= AREA_NEMURO[["ymax"]]) %>%
+    select(scene_id, detect_id, detect_timestamp, detect_lat, detect_lon, ssvid, score, confidence) %>%
+    collect() %>%
+    write_parquet(sar_file)
+}
+
+# 1検出1行にまとめる：確からしさが最大の候補船を残す
+sar <- read_parquet(sar_file) %>%
+  group_by(scene_id, detect_id, detect_timestamp, detect_lat, detect_lon) %>%
+  summarise(best_conf  = suppressWarnings(max(confidence, na.rm = TRUE)),
+            best_ssvid = ssvid[which.max(coalesce(confidence, -1))],
+            .groups = "drop") %>%
+  mutate(best_conf = if_else(is.infinite(best_conf), NA_real_, best_conf),
+         ais       = !is.na(best_conf) & best_conf >= 0.5,
+         rus_ais   = ais & str_starts(coalesce(best_ssvid, ""), "273"),
+         year      = year(with_tz(detect_timestamp, "Asia/Tokyo")))
+
+sar_sf <- st_as_sf(sar, coords = c("detect_lon", "detect_lat"), crs = 4326, remove = FALSE)
+sar <- sar %>%
+  mutate(in_strait = st_intersects(sar_sf, st_union(area_strait), sparse = FALSE)[, 1],
+         dist_hokkaido_km = as.numeric(st_distance(st_transform(sar_sf, 32655), hokkaido_sf)) / 1000) %>%
+  filter(in_strait, year %in% YEARS)
+```
+
+## table10 SARの検出：AISあり・なし
+
+```{r table10-sar}
+table10_sar <- sar %>%
+  group_by(year) %>%
+  # 列名 ais を上書きしないよう、集計結果は n_ で始まる名前にする
+  summarise(scenes        = n_distinct(scene_id),
+            detections    = n(),
+            n_ais         = sum(ais),
+            n_no_ais      = sum(!ais),
+            far_total     = sum(dist_hokkaido_km >= 12),
+            far_rus_ais   = sum(rus_ais & dist_hokkaido_km >= 12),
+            far_no_ais    = sum(!ais & dist_hokkaido_km >= 12),
+            .groups = "drop") %>%
+  mutate(far_no_ais_share = far_no_ais / far_total) %>%
+  gt() %>%
+  tab_header(title = "table10 根室海峡のSAR船舶検出：AISあり・なし",
+             subtitle = "範囲② 海峡のみ。AISあり＝候補船の確からしさが0.5以上") %>%
+  tab_spanner("海峡全体", columns = c(detections, n_ais, n_no_ais)) %>%
+  tab_spanner("北海道の海岸から12 km以上", columns = c(far_total, far_rus_ais, far_no_ais, far_no_ais_share)) %>%
+  cols_label(year = "年", scenes = "衛星画像の数", detections = "検出", n_ais = "AISあり", n_no_ais = "AISなし",
+             far_total = "検出", far_rus_ais = "うちロシアのAIS", far_no_ais = "AISなし", far_no_ais_share = "AISなしの割合") %>%
+  fmt_percent(columns = far_no_ais_share, decimals = 0)
+
+table10_sar
+save_table(table10_sar)
+```
+
+## plot19 SAR検出の位置（2024–2025年）
+
+**集計**：範囲② × 2024–2025年。点は1検出。色はAISの有無とロシアの船か。
+
+```{r plot19-sar-map, fig.width=10, fig.height=8}
+sar_recent <- sar %>%
+  filter(year >= 2024) %>%
+  mutate(type = case_when(rus_ais ~ "AISあり（ロシアの船）",
+                          ais     ~ "AISあり（ロシア以外）",
+                          TRUE    ~ "AISなし"),
+         type = factor(type, levels = c("AISなし", "AISあり（ロシア以外）", "AISあり（ロシアの船）")))
+
+plot19_sar_map <- ggplot() +
+  geom_sf(data = land_sf, fill = "gray85", color = "gray60") +
+  geom_sf(data = area_strait, fill = NA, color = "steelblue", linetype = "dashed") +
+  geom_point(data = sar_recent, aes(detect_lon, detect_lat, color = type), size = 1.2, alpha = 0.7) +
+  scale_color_manual(values = c("AISなし" = "#d9534f", "AISあり（ロシア以外）" = "gray50",
+                                "AISあり（ロシアの船）" = "#1f5a8a"), name = NULL) +
+  coord_sf(xlim = c(145.0, 146.2), ylim = c(43.3, 44.55), expand = FALSE) +
+  scale_x_continuous(breaks = c(145.2, 145.6, 146.0)) +
+  facet_wrap(~year) +
+  labs(title = "plot19 根室海峡のSAR船舶検出（2024–2025年）",
+       subtitle = "範囲② 海峡のみ（破線）。点は衛星レーダーで検出された船",
+       x = "経度", y = "緯度") +
+  theme(legend.position = "top")
+
+plot19_sar_map
+save_plot(plot19_sar_map, width = 10, height = 8)
+```
+
+::: {.callout-tip title="結果メモ（C4）"}
+- **海峡でSARが検出する船の大半は、AISと対応しない**：北海道の海岸から12 km以上の範囲でも、AISなしの検出が毎年91–95%（2025年は283件中258件）。ロシアの船としてAISと対応した検出は、年11–45件だけ（table10）。
+- **つまり、AISで見えているのは、海峡にいる船のごく一部**：GFWのAISにもとづく延べ隻日（2025年 C1' 171）は、実際にいる船の下限と考えるべき。地元の数（239）がGFWより多いことは、SARの結果と矛盾しない。
+- **ただし、AISなしの検出がすべてロシアのトロール船とは言えない**：国後島側の小型漁船、北海道寄りの日本の小型漁船（12 kmの線は日ロの境界線ではない）、定置網などの構造物、誤検出も含まれる。plot19 では、同じ場所に点が何度も並ぶところがあり、構造物の可能性がある。
+- **SARは毎日の観測ではない**：衛星画像は年39–75枚（数日に1回）。また2022年以降は画像の数が減っている（2021年75枚 → 2023–2025年39–42枚）ので、年ごとの検出数をそのまま比べることはできない。
+- **次に確かめること**：(1) 海上保安庁の参考ライン（日ロの境界として使われている線）で、日本側・ロシア側に分けて数える。(2) 同じ場所で繰り返し検出される点（構造物の可能性）を除く。(3) 検出された船の大きさ（長さ）がわかれば、トロール船の大きさ（40–65 m）に当たるものに絞る。
+:::
